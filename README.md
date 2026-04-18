@@ -44,6 +44,26 @@ npm run client:dev  # ng serve on :4200 (proxies /ws + /api to :3000)
 - `MLX_MODEL` — any HuggingFace ID or key from `RECOMMENDED_MODELS`
   (default: `qwen-3-1.7b`). First run downloads the weights.
 
+## Invite-Only User Onboarding
+
+Create users from the command line (writes into `mlx-chat.db`):
+
+```bash
+npm run user:add -- <username>
+```
+
+Or provide password non-interactively:
+
+```bash
+npm run user:add -- <username> --password '<strong-password>'
+```
+
+Optional database path:
+
+```bash
+npm run user:add -- <username> --db /path/to/mlx-chat.db
+```
+
 ## Wire protocol
 
 Client → server: `{ "type": "prompt", "id": "...", "prompt": "..." }`

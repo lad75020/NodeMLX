@@ -11,6 +11,7 @@ import { CommonModule } from "@angular/common";
 import { FormsModule } from "@angular/forms";
 import { ChatImageAttachment, ChatService } from "./chat.service";
 import { ModelSelectorComponent } from "./model-selector.component";
+import { AuthService } from "./auth.service";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
@@ -34,7 +35,10 @@ interface ImageGenerationPreset {
   styleUrl: "./app.component.scss",
 })
 export class AppComponent implements OnInit, AfterViewChecked {
+  protected readonly auth = inject(AuthService);
   protected readonly chat = inject(ChatService);
+  protected authUsername = "";
+  protected authPassword = "";
   protected prompt = "";
   protected selectedImage: ChatImageAttachment | null = null;
   protected imageError: string | null = null;
@@ -60,8 +64,41 @@ export class AppComponent implements OnInit, AfterViewChecked {
   private lastLength = 0;
 
   ngOnInit(): void {
+    void this.initialize();
+  }
+
+  protected async submitAuth(): Promise<void> {
+    if (this.auth.loading()) return;
+    const username = this.authUsername.trim();
+    const password = this.authPassword;
+    if (!username || !password) {
+      this.auth.error.set("Username and password are required.");
+      return;
+    }
+
+    const ok = await this.auth.login(username, password);
+    if (!ok) return;
+    this.authPassword = "";
+    await this.connectChat();
+  }
+
+  protected async logout(): Promise<void> {
+    if (this.auth.loading()) return;
+    this.chat.disconnect(true);
+    await this.auth.logout();
+    this.authPassword = "";
+  }
+
+  private async initialize(): Promise<void> {
+    await this.auth.restoreSession();
+    if (this.auth.isAuthenticated()) {
+      await this.connectChat();
+    }
+  }
+
+  private async connectChat(): Promise<void> {
     this.chat.connect();
-    void this.chat.loadChats();
+    await this.chat.loadChats();
   }
 
   protected formatChatLabel(startedAt: string): string {

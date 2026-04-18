@@ -5,7 +5,8 @@ import { fork } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
+import { promisify } from "node:util";
 
 // Force the standard HuggingFace cache location (~/.cache/huggingface/hub)
 // before anything spawns so the worker inherits it.  Without this, the Swift
@@ -35,6 +36,11 @@ const MODELS_OWNER = "mlx-community";
 const MODELS_TTL_MS = 10 * 60 * 1000;
 const IMAGE_TMP_DIR = join(tmpdir(), "nodemlx-chat-images");
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const SESSION_COOKIE_NAME = "nodemlx_session";
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const MIN_USERNAME_LENGTH = 3;
+const MAX_USERNAME_LENGTH = 40;
+const MIN_PASSWORD_LENGTH = 8;
 const MAX_GENERATION_TOKENS = clampInteger(
   Number(process.env.MLX_MAX_TOKENS_LIMIT ?? 32768),
   1,
@@ -73,6 +79,7 @@ function optionalClampedInteger(value, min, max, multiple = 1) {
 
 // ─── SQLite — model registry ──────────────────────────────────────────
 const db = new Database(join(__dirname, "mlx-chat.db"));
+db.pragma("foreign_keys = ON");
 db.exec(`
   CREATE TABLE IF NOT EXISTS failed_models (
     model_id  TEXT PRIMARY KEY,
@@ -85,6 +92,26 @@ db.exec(`
     is_vlm    INTEGER NOT NULL DEFAULT 0,
     last_used TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
   );
+
+  CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    last_login_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    id           TEXT PRIMARY KEY,
+    user_id      INTEGER NOT NULL,
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    expires_at   TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+  CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 `);
 const stmt = {
   upsertFailed: db.prepare(`
@@ -111,7 +138,162 @@ const stmt = {
   allSaved: db.prepare(
     "SELECT model_id AS id, is_vlm AS isVlm, last_used AS lastUsed FROM saved_models ORDER BY last_used DESC"
   ),
+  createUser: db.prepare(`
+    INSERT INTO users (username, password_hash)
+    VALUES (?, ?)
+  `),
+  getUserForLogin: db.prepare(`
+    SELECT id, username, password_hash AS passwordHash
+    FROM users
+    WHERE username = ?
+  `),
+  createSession: db.prepare(`
+    INSERT INTO sessions (id, user_id, expires_at)
+    VALUES (?, ?, ?)
+  `),
+  getSessionUser: db.prepare(`
+    SELECT
+      s.id AS sessionId,
+      s.user_id AS userId,
+      u.username AS username
+    FROM sessions s
+    JOIN users u ON u.id = s.user_id
+    WHERE s.id = ?
+      AND datetime(s.expires_at) > datetime('now')
+  `),
+  touchSession: db.prepare(`
+    UPDATE sessions
+    SET last_seen_at = ?
+    WHERE id = ?
+  `),
+  deleteSession: db.prepare("DELETE FROM sessions WHERE id = ?"),
+  deleteExpiredSessions: db.prepare(`
+    DELETE FROM sessions
+    WHERE datetime(expires_at) <= datetime('now')
+  `),
+  updateUserLastLogin: db.prepare(`
+    UPDATE users
+    SET last_login_at = ?
+    WHERE id = ?
+  `),
 };
+stmt.deleteExpiredSessions.run();
+
+const scryptAsync = promisify(scrypt);
+
+function normalizeUsername(value) {
+  if (typeof value !== "string") return "";
+  return value.trim();
+}
+
+function validateUsername(username) {
+  if (username.length < MIN_USERNAME_LENGTH || username.length > MAX_USERNAME_LENGTH) {
+    throw new Error(`Username must be ${MIN_USERNAME_LENGTH}-${MAX_USERNAME_LENGTH} characters.`);
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(username)) {
+    throw new Error("Username may contain only letters, numbers, dot, underscore, and hyphen.");
+  }
+}
+
+function validatePassword(password) {
+  if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) {
+    throw new Error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+  }
+}
+
+async function hashPassword(password) {
+  const salt = randomBytes(16).toString("hex");
+  const derived = await scryptAsync(password, salt, 64);
+  return `${salt}:${Buffer.from(derived).toString("hex")}`;
+}
+
+async function verifyPassword(password, storedHash) {
+  if (typeof storedHash !== "string") return false;
+  const [salt, expectedHex] = storedHash.split(":");
+  if (!salt || !expectedHex) return false;
+  const expected = Buffer.from(expectedHex, "hex");
+  if (expected.length === 0) return false;
+  const actual = Buffer.from(await scryptAsync(password, salt, expected.length));
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+function parseCookies(cookieHeader) {
+  const out = {};
+  if (typeof cookieHeader !== "string" || cookieHeader.length === 0) return out;
+  for (const part of cookieHeader.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq <= 0) continue;
+    const key = part.slice(0, eq).trim();
+    const value = part.slice(eq + 1).trim();
+    if (!key) continue;
+    try {
+      out[key] = decodeURIComponent(value);
+    } catch {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+function serializeCookie(name, value, options = {}) {
+  const pairs = [`${name}=${encodeURIComponent(value)}`];
+  pairs.push(`Path=${options.path ?? "/"}`);
+  pairs.push(`SameSite=${options.sameSite ?? "Lax"}`);
+  if (typeof options.maxAge === "number") pairs.push(`Max-Age=${Math.max(0, Math.trunc(options.maxAge))}`);
+  if (options.httpOnly !== false) pairs.push("HttpOnly");
+  if (options.secure === true) pairs.push("Secure");
+  return pairs.join("; ");
+}
+
+function isSecureRequest(request) {
+  if (request.protocol === "https") return true;
+  const forwardedProto = request.headers["x-forwarded-proto"];
+  return typeof forwardedProto === "string" && forwardedProto.split(",")[0].trim() === "https";
+}
+
+function sessionCookieValue(request) {
+  const cookies = parseCookies(request.headers.cookie);
+  const raw = cookies[SESSION_COOKIE_NAME];
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  return raw;
+}
+
+function setSessionCookie(reply, request, sessionId) {
+  reply.header("Set-Cookie", serializeCookie(SESSION_COOKIE_NAME, sessionId, {
+    path: "/",
+    sameSite: "Lax",
+    httpOnly: true,
+    secure: isSecureRequest(request),
+    maxAge: Math.floor(SESSION_TTL_MS / 1000),
+  }));
+}
+
+function clearSessionCookie(reply, request) {
+  reply.header("Set-Cookie", serializeCookie(SESSION_COOKIE_NAME, "", {
+    path: "/",
+    sameSite: "Lax",
+    httpOnly: true,
+    secure: isSecureRequest(request),
+    maxAge: 0,
+  }));
+}
+
+function createSessionForUser(userId) {
+  const sessionId = randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
+  stmt.createSession.run(sessionId, userId, expiresAt);
+  return sessionId;
+}
+
+function readSessionUser(request) {
+  stmt.deleteExpiredSessions.run();
+  const sessionId = sessionCookieValue(request);
+  if (!sessionId) return null;
+  const session = stmt.getSessionUser.get(sessionId);
+  if (!session) return null;
+  stmt.touchSession.run(new Date().toISOString(), sessionId);
+  return session;
+}
 
 // ─── MongoDB — chat persistence ──────────────────────────────────────
 const MONGO_URL = process.env.MONGO_URL ?? "mongodb://192.168.1.80:27017";
@@ -122,6 +304,7 @@ try {
   await mongoClient.connect();
   chatsCol = mongoClient.db(MONGO_DB).collection("Chats");
   await chatsCol.createIndex({ startedAt: -1 });
+  await chatsCol.createIndex({ userId: 1, startedAt: -1 });
   console.log(`Mongo → ${MONGO_URL}/${MONGO_DB}`);
 } catch (err) {
   console.error("MongoDB connection failed:", err.message);
@@ -136,26 +319,27 @@ function toChatSummary(doc) {
   };
 }
 
-async function createChat() {
+async function createChat(userId) {
   if (!chatsCol) throw new Error("Chat storage unavailable.");
+  if (typeof userId !== "number") throw new Error("Missing user id.");
   const now = new Date();
-  const res = await chatsCol.insertOne({ startedAt: now, title: null, messages: [] });
+  const res = await chatsCol.insertOne({ userId, startedAt: now, title: null, messages: [] });
   return { id: res.insertedId.toString(), startedAt: now.toISOString(), title: null, messageCount: 0 };
 }
 
-async function appendChatMessages(chatId, entries) {
-  if (!chatsCol || !chatId) return;
+async function appendChatMessages(userId, chatId, entries) {
+  if (!chatsCol || !chatId || typeof userId !== "number") return;
   let id;
   try { id = new ObjectId(chatId); } catch { return; }
   const update = { $push: { messages: { $each: entries } } };
   const firstUserEntry = entries.find((e) => e.role === "user" && e.text);
   if (firstUserEntry) {
-    const doc = await chatsCol.findOne({ _id: id }, { projection: { title: 1 } });
+    const doc = await chatsCol.findOne({ _id: id, userId }, { projection: { title: 1 } });
     if (doc && !doc.title) {
       update.$set = { title: firstUserEntry.text.slice(0, 80) };
     }
   }
-  await chatsCol.updateOne({ _id: id }, update);
+  await chatsCol.updateOne({ _id: id, userId }, update);
 }
 
 // ─── WebSocket broadcast helpers ─────────────────────────────────────
@@ -353,7 +537,7 @@ class ModelProcess {
             tokensPerSecond: msg.tokensPerSecond,
           }));
         }
-        if (pending?.chatId) {
+        if (pending?.chatId && typeof pending.userId === "number") {
           const now = new Date();
           const entries = [{
             id: msg.id,
@@ -371,7 +555,7 @@ class ModelProcess {
             tokensPerSecond: msg.tokensPerSecond ?? null,
             createdAt: now,
           }];
-          appendChatMessages(pending.chatId, entries).catch((err) =>
+          appendChatMessages(pending.userId, pending.chatId, entries).catch((err) =>
             console.error("Mongo append failed:", err.message)
           );
         }
@@ -469,6 +653,56 @@ await fastify.register(fastifyStatic, {
   decorateReply: false,
 });
 
+// ─── Auth endpoints (HTTP + cookie sessions) ──────────────────────────
+fastify.get("/api/auth/me", async (request, reply) => {
+  const session = readSessionUser(request);
+  if (!session) {
+    clearSessionCookie(reply, request);
+    return { authenticated: false };
+  }
+  return {
+    authenticated: true,
+    user: {
+      id: session.userId,
+      username: session.username,
+    },
+  };
+});
+
+fastify.post("/api/auth/register", async (_request, reply) => {
+  reply.code(403);
+  return { error: "Registration is disabled. Ask an administrator for an invite." };
+});
+
+fastify.post("/api/auth/login", async (request, reply) => {
+  const body = request.body ?? {};
+  const username = normalizeUsername(body.username);
+  const password = body.password;
+  if (!username || typeof password !== "string") {
+    reply.code(400);
+    return { error: "Username and password are required." };
+  }
+
+  const user = stmt.getUserForLogin.get(username);
+  const valid = user ? await verifyPassword(password, user.passwordHash) : false;
+  if (!valid) {
+    reply.code(401);
+    return { error: "Invalid username or password." };
+  }
+
+  stmt.updateUserLastLogin.run(new Date().toISOString(), user.id);
+  const sessionId = createSessionForUser(user.id);
+  setSessionCookie(reply, request, sessionId);
+  return { user: { id: user.id, username: user.username } };
+});
+
+fastify.post("/api/auth/logout", async (request, reply) => {
+  const sessionId = sessionCookieValue(request);
+  if (sessionId) stmt.deleteSession.run(sessionId);
+  clearSessionCookie(reply, request);
+  return { ok: true };
+});
+
 // ─── RPC handlers (invoked over WebSocket) ───────────────────────────
 async function rpcListModels({ refresh }) {
   const hfModels = await listMlxCommunityModels(refresh === true);
@@ -497,10 +731,11 @@ function rpcListFailedModels() {
   return { failed: stmt.allFailed.all() };
 }
 
-async function rpcListChats() {
+async function rpcListChats(_payload, { userId }) {
   if (!chatsCol) throw new Error("Chat storage unavailable.");
+  if (typeof userId !== "number") throw new Error("Unauthorized.");
   const docs = await chatsCol
-    .find({}, { projection: { messages: 0 } })
+    .find({ userId }, { projection: { messages: 0 } })
     .sort({ startedAt: -1 })
     .toArray();
   return {
@@ -512,11 +747,12 @@ async function rpcListChats() {
   };
 }
 
-async function rpcOpenChat({ chatId }) {
+async function rpcOpenChat({ chatId }, { userId }) {
   if (!chatsCol) throw new Error("Chat storage unavailable.");
+  if (typeof userId !== "number") throw new Error("Unauthorized.");
   let id;
   try { id = new ObjectId(chatId); } catch { throw new Error("Invalid chat id."); }
-  const doc = await chatsCol.findOne({ _id: id });
+  const doc = await chatsCol.findOne({ _id: id, userId });
   if (!doc) throw new Error("Chat not found.");
   return {
     id: doc._id.toString(),
@@ -535,20 +771,22 @@ async function rpcOpenChat({ chatId }) {
   };
 }
 
-async function rpcDeleteChat({ chatId }) {
+async function rpcDeleteChat({ chatId }, { userId }) {
   if (!chatsCol) throw new Error("Chat storage unavailable.");
+  if (typeof userId !== "number") throw new Error("Unauthorized.");
   let id;
   try { id = new ObjectId(chatId); } catch { throw new Error("Invalid chat id."); }
-  await chatsCol.deleteOne({ _id: id });
+  await chatsCol.deleteOne({ _id: id, userId });
   return { ok: true };
 }
 
-async function rpcDeleteMessage({ chatId, messageId }) {
+async function rpcDeleteMessage({ chatId, messageId }, { userId }) {
   if (!chatsCol) throw new Error("Chat storage unavailable.");
+  if (typeof userId !== "number") throw new Error("Unauthorized.");
   if (typeof messageId !== "string" || !messageId) throw new Error("Invalid message id.");
   let id;
   try { id = new ObjectId(chatId); } catch { throw new Error("Invalid chat id."); }
-  await chatsCol.updateOne({ _id: id }, { $pull: { messages: { id: messageId } } });
+  await chatsCol.updateOne({ _id: id, userId }, { $pull: { messages: { id: messageId } } });
   return { ok: true };
 }
 
@@ -563,7 +801,14 @@ const rpcHandlers = {
 
 // ─── WebSocket endpoint ───────────────────────────────────────────────
 fastify.register(async (instance) => {
-  instance.get("/ws", { websocket: true }, (socket) => {
+  instance.get("/ws", { websocket: true }, (socket, request) => {
+    const session = readSessionUser(request);
+    if (!session || typeof session.userId !== "number") {
+      socket.send(JSON.stringify({ type: "error", error: "Authentication required." }));
+      socket.close(4401, "Unauthorized");
+      return;
+    }
+
     sockets.add(socket);
     socket.send(JSON.stringify(modelProcess.greetingMessage()));
 
@@ -582,7 +827,7 @@ fastify.register(async (instance) => {
       if (typeof payload?.type === "string" && payload.type in rpcHandlers && typeof payload.requestId === "string") {
         const requestId = payload.requestId;
         try {
-          const data = await rpcHandlers[payload.type](payload);
+          const data = await rpcHandlers[payload.type](payload, { userId: session.userId });
           socket.send(JSON.stringify({ type: "rpcResult", requestId, data }));
         } catch (err) {
           socket.send(JSON.stringify({
@@ -618,12 +863,15 @@ fastify.register(async (instance) => {
           if (chatsCol) {
             if (chatId) {
               try {
-                const exists = await chatsCol.findOne({ _id: new ObjectId(chatId) }, { projection: { _id: 1 } });
+                const exists = await chatsCol.findOne(
+                  { _id: new ObjectId(chatId), userId: session.userId },
+                  { projection: { _id: 1 } }
+                );
                 if (!exists) chatId = null;
               } catch { chatId = null; }
             }
             if (!chatId) {
-              const created = await createChat();
+              const created = await createChat(session.userId);
               chatId = created.id;
               socket.send(JSON.stringify({ type: "chatCreated", id, chat: created }));
             }
@@ -641,6 +889,7 @@ fastify.register(async (instance) => {
             seed:               optionalClampedInteger(payload.seed, 0, 2 ** 31 - 1),
           }, persistedImage?.path ?? null, {
             chatId,
+            userId: session.userId,
             userText: payload.prompt,
             userImage: payload.image ?? null,
             userAt: new Date(),

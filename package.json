@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "user:add": "node scripts/onboard-user.js",
     "client:install": "cd client && npm install",
     "client:build": "cd client && npm run build",
     "client:dev": "cd client && npm start",

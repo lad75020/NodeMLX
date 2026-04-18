@@ -94,6 +94,7 @@ export class ChatService {
 
   private socket?: WebSocket;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
+  private shouldReconnect = true;
   private readonly outbox: string[] = [];
   private readonly pendingRpc = new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 
@@ -103,6 +104,7 @@ export class ChatService {
       (this.socket.readyState === WebSocket.OPEN ||
         this.socket.readyState === WebSocket.CONNECTING)
     ) return;
+    this.shouldReconnect = true;
 
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
@@ -115,7 +117,8 @@ export class ChatService {
         if (msg) ws.send(msg);
       }
     });
-    ws.addEventListener("close", () => {
+    ws.addEventListener("close", (event) => {
+      if (this.socket === ws) this.socket = undefined;
       this.connected.set(false);
       this.busy.set(false);
       // Fail any in-flight RPCs so callers can retry.
@@ -123,12 +126,36 @@ export class ChatService {
         handlers.reject(new Error("Connection closed."));
       }
       this.pendingRpc.clear();
+      if (!this.shouldReconnect || event.code === 1000 || event.code === 4401) return;
       this.scheduleReconnect();
     });
     ws.addEventListener("error", () => this.connected.set(false));
     ws.addEventListener("message", (ev) => {
       try { this.handleEvent(JSON.parse(ev.data) as ServerEvent); } catch {}
     });
+  }
+
+  disconnect(clearState = false): void {
+    this.shouldReconnect = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    const ws = this.socket;
+    this.socket = undefined;
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+      ws.close(1000, "logout");
+    }
+    this.connected.set(false);
+    this.busy.set(false);
+
+    for (const [, handlers] of this.pendingRpc) {
+      handlers.reject(new Error("Connection closed."));
+    }
+    this.pendingRpc.clear();
+    this.outbox.length = 0;
+
+    if (clearState) this.resetState();
   }
 
   // ── RPC over WebSocket ────────────────────────────────────────────
@@ -334,6 +361,23 @@ export class ChatService {
     const map = new Map<string, string>();
     for (const f of list) map.set(f.id, f.error);
     this.failedModels.set(map);
+  }
+
+  private resetState(): void {
+    this.messages.set([]);
+    this.currentChatId.set(null);
+    this.chats.set([]);
+    this.chatsLoading.set(false);
+    this.currentModel.set(null);
+    this.modelLoading.set(false);
+    this.pendingModel.set(null);
+    this.modelError.set(null);
+    this.supportsVision.set(false);
+    this.supportsImageGeneration.set(false);
+    this.availableModels.set([]);
+    this.modelsLoading.set(false);
+    this.modelsError.set(null);
+    this.failedModels.set(new Map());
   }
 
   private scheduleReconnect(): void {
