@@ -473,8 +473,10 @@ class ModelProcess {
     if (imagePath && !this.#isVLM) {
       throw new Error("The active node-mlx backend does not support image input for this model.");
     }
-    this.#pending.set(id, { socket, imagePath, ...context });
-    this.#worker.send({ type: "generate", id, prompt, options, imagePath });
+    return new Promise((resolve) => {
+      this.#pending.set(id, { socket, imagePath, resolve, ...context });
+      this.#worker.send({ type: "generate", id, prompt, options, imagePath });
+    });
   }
 
   // ── Worker lifecycle ──────────────────────────────────────────────
@@ -576,6 +578,7 @@ class ModelProcess {
             console.error("Mongo append failed:", err.message)
           );
         }
+        pending?.resolve?.();
         break;
       }
 
@@ -587,6 +590,7 @@ class ModelProcess {
         if (socket?.readyState === 1) {
           socket.send(JSON.stringify({ type: "error", id: msg.id, error: msg.error }));
         }
+        pending?.resolve?.();
         break;
       }
     }
@@ -624,6 +628,7 @@ class ModelProcess {
           JSON.stringify({ type: "error", id, error: "Model process crashed." })
         );
       }
+      pending.resolve?.();
     }
     this.#pending.clear();
 
@@ -637,6 +642,55 @@ const modelProcess = new ModelProcess();
 // Load the default model (queued; fires once the worker is ready).
 console.log(`Queuing initial model load: ${DEFAULT_MODEL}`);
 modelProcess.load(DEFAULT_MODEL);
+
+// ─── GenerationQueue — serializes user generation requests ───────────
+class GenerationQueue {
+  #active = false;
+  #items = [];
+
+  enqueue(item) {
+    const willWait = this.#active || this.#items.length > 0;
+    this.#items.push(item);
+    if (willWait) this.#notifyQueuedPositions();
+    void this.#drain();
+  }
+
+  async #drain() {
+    if (this.#active) return;
+
+    while (this.#items.length > 0) {
+      const item = this.#items.shift();
+      this.#notifyQueuedPositions();
+
+      if (item.socket?.readyState !== 1) continue;
+
+      this.#active = true;
+      try {
+        await item.run();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (item.socket?.readyState === 1) {
+          item.socket.send(JSON.stringify({ type: "error", id: item.id, error: message }));
+        }
+      } finally {
+        this.#active = false;
+      }
+    }
+  }
+
+  #notifyQueuedPositions() {
+    this.#items = this.#items.filter((item) => item.socket?.readyState === 1);
+    this.#items.forEach((item, index) => {
+      item.socket.send(JSON.stringify({
+        type: "queued",
+        id: item.id,
+        position: index + 1,
+      }));
+    });
+  }
+}
+
+const generationQueue = new GenerationQueue();
 
 // ─── HuggingFace model catalog cache ─────────────────────────────────
 let modelsCache = null;
@@ -680,6 +734,31 @@ async function listOllamaModels() {
     }))
     .filter((m) => m.id.length > 0)
     .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+async function showOllamaModel(model) {
+  const id = typeof model === "string" ? model.trim() : "";
+  if (!id) throw new Error("Ollama model required.");
+
+  const res = await fetch(`${OLLAMA_URL}/api/show`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: id }),
+  });
+  if (!res.ok) {
+    const message = await res.text().catch(() => "");
+    throw new Error(`Ollama model details failed (${res.status})${message ? `: ${message}` : "."}`);
+  }
+
+  const body = await res.json();
+  return {
+    id,
+    capabilities: Array.isArray(body?.capabilities)
+      ? body.capabilities.filter((capability) => typeof capability === "string")
+      : [],
+    details: body?.details && typeof body.details === "object" ? body.details : null,
+    modifiedAt: typeof body?.modified_at === "string" ? body.modified_at : null,
+  };
 }
 
 function collectOllamaImages(parsed) {
@@ -1110,6 +1189,10 @@ async function rpcListOllamaModels() {
   return { models: await listOllamaModels(), url: OLLAMA_URL };
 }
 
+async function rpcShowOllamaModel({ modelId }) {
+  return { model: await showOllamaModel(modelId) };
+}
+
 async function rpcListChats(_payload, { userId }) {
   if (!chatsCol) throw new Error("Chat storage unavailable.");
   if (typeof userId !== "number") throw new Error("Unauthorized.");
@@ -1173,6 +1256,7 @@ async function rpcDeleteMessage({ chatId, messageId }, { userId }) {
 const rpcHandlers = {
   listModels:       rpcListModels,
   listOllamaModels: rpcListOllamaModels,
+  showOllamaModel:  rpcShowOllamaModel,
   listFailedModels: rpcListFailedModels,
   listChats:        rpcListChats,
   openChat:         rpcOpenChat,
@@ -1235,68 +1319,71 @@ fastify.register(async (instance) => {
 
       // ── ollamaPrompt ──────────────────────────────────────────────
       if (payload?.type === "ollamaPrompt") {
-        try {
-          await streamOllamaPrompt(socket, payload, session.userId);
-        } catch (err) {
-          socket.send(JSON.stringify({
-            type: "error",
-            id: payload.id ?? undefined,
-            error: err instanceof Error ? err.message : String(err),
-          }));
-        }
+        const id = payload.id ?? String(Date.now());
+        generationQueue.enqueue({
+          id,
+          socket,
+          run: () => streamOllamaPrompt(socket, { ...payload, id }, session.userId),
+        });
         return;
       }
 
       // ── prompt ───────────────────────────────────────────────────
       if (payload?.type === "prompt" && typeof payload.prompt === "string") {
         const id = payload.id ?? String(Date.now());
-        let persistedImage = null;
-        try {
-          persistedImage = await persistPromptImage(payload.image);
+        generationQueue.enqueue({
+          id,
+          socket,
+          run: async () => {
+            let persistedImage = null;
+            try {
+              persistedImage = await persistPromptImage(payload.image);
 
-          let chatId = typeof payload.chatId === "string" ? payload.chatId : null;
-          if (chatsCol) {
-            if (chatId) {
-              try {
-                const exists = await chatsCol.findOne(
-                  { _id: new ObjectId(chatId), userId: session.userId },
-                  { projection: { _id: 1 } }
-                );
-                if (!exists) chatId = null;
-              } catch { chatId = null; }
-            }
-            if (!chatId) {
-              const created = await createChat(session.userId);
-              chatId = created.id;
-              socket.send(JSON.stringify({ type: "chatCreated", id, chat: created }));
-            }
-          }
+              let chatId = typeof payload.chatId === "string" ? payload.chatId : null;
+              if (chatsCol) {
+                if (chatId) {
+                  try {
+                    const exists = await chatsCol.findOne(
+                      { _id: new ObjectId(chatId), userId: session.userId },
+                      { projection: { _id: 1 } }
+                    );
+                    if (!exists) chatId = null;
+                  } catch { chatId = null; }
+                }
+                if (!chatId) {
+                  const created = await createChat(session.userId);
+                  chatId = created.id;
+                  socket.send(JSON.stringify({ type: "chatCreated", id, chat: created }));
+                }
+              }
 
-          socket.send(JSON.stringify({ type: "start", id, chatId }));
-          modelProcess.generate(socket, id, payload.prompt, {
-            maxTokens:          clampInteger(payload.maxTokens, 1, MAX_GENERATION_TOKENS, DEFAULT_MAX_TOKENS),
-            temperature:        payload.temperature        ?? 0.7,
-            topP:               payload.topP               ?? 0.95,
-            repetitionPenalty:  payload.repetitionPenalty  ?? 1.1,
-            imageWidth:         optionalClampedInteger(payload.imageWidth, 64, 2048, 8),
-            imageHeight:        optionalClampedInteger(payload.imageHeight, 64, 2048, 8),
-            steps:              optionalClampedInteger(payload.steps, 1, 150),
-            seed:               optionalClampedInteger(payload.seed, 0, 2 ** 31 - 1),
-          }, persistedImage?.path ?? null, {
-            chatId,
-            userId: session.userId,
-            userText: payload.prompt,
-            userImage: payload.image ?? null,
-            userAt: new Date(),
-          });
-        } catch (err) {
-          cleanupPromptImage(persistedImage?.path);
-          socket.send(JSON.stringify({
-            type: "error",
-            id,
-            error: err instanceof Error ? err.message : String(err),
-          }));
-        }
+              socket.send(JSON.stringify({ type: "start", id, chatId }));
+              await modelProcess.generate(socket, id, payload.prompt, {
+                maxTokens:          clampInteger(payload.maxTokens, 1, MAX_GENERATION_TOKENS, DEFAULT_MAX_TOKENS),
+                temperature:        payload.temperature        ?? 0.7,
+                topP:               payload.topP               ?? 0.95,
+                repetitionPenalty:  payload.repetitionPenalty  ?? 1.1,
+                imageWidth:         optionalClampedInteger(payload.imageWidth, 64, 2048, 8),
+                imageHeight:        optionalClampedInteger(payload.imageHeight, 64, 2048, 8),
+                steps:              optionalClampedInteger(payload.steps, 1, 150),
+                seed:               optionalClampedInteger(payload.seed, 0, 2 ** 31 - 1),
+              }, persistedImage?.path ?? null, {
+                chatId,
+                userId: session.userId,
+                userText: payload.prompt,
+                userImage: payload.image ?? null,
+                userAt: new Date(),
+              });
+            } catch (err) {
+              cleanupPromptImage(persistedImage?.path);
+              socket.send(JSON.stringify({
+                type: "error",
+                id,
+                error: err instanceof Error ? err.message : String(err),
+              }));
+            }
+          },
+        });
         return;
       }
 

@@ -199,6 +199,25 @@
   color: #0a58ca;
 }
 
+.capability-ollama {
+  border-color: #c8d8bd;
+  background: #edf7e8;
+  color: #2b5d22;
+}
+
+.capability-loading,
+.capability-unavailable {
+  border-color: #d5d9df;
+  background: #f8f9fa;
+  color: #495057;
+}
+
+.capability-loading .spinner-border {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-width: 0.12rem;
+}
+
 .capability-text {
   border-color: #d5d9df;
   background: #f8f9fa;

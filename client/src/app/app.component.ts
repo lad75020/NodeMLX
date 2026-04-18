@@ -285,6 +285,23 @@ export class AppComponent implements OnInit, AfterViewChecked {
       : "Type a message... attach an image for multimodal models";
   }
 
+  protected pendingLabel(message: ChatMessage): string {
+    if (message.queued) {
+      return message.queuePosition && message.queuePosition > 1
+        ? `queue · position ${message.queuePosition}`
+        : "queue";
+    }
+    return this.chat.supportsImageGeneration() && message.role === "assistant"
+      ? "generating…"
+      : "thinking…";
+  }
+
+  protected capabilityLabel(capability: string): string {
+    const normalized = capability.replace(/[-_]+/g, " ").trim();
+    if (!normalized) return capability;
+    return normalized[0].toUpperCase() + normalized.slice(1);
+  }
+
   protected normalizedMaxTokens(): number {
     if (!Number.isFinite(this.maxTokens)) return DEFAULT_MAX_TOKENS;
     return Math.min(

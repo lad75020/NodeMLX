@@ -11,6 +11,8 @@ export interface ChatMessage {
   image?: ChatImageAttachment;
   images?: ChatImageAttachment[];
   pending?: boolean;
+  queued?: boolean;
+  queuePosition?: number;
   tokensPerSecond?: number;
   tokenCount?: number;
   modelId?: string;
@@ -55,6 +57,13 @@ export interface OllamaModel {
   details: Record<string, unknown> | null;
 }
 
+export interface OllamaModelDetails {
+  id: string;
+  capabilities: string[];
+  details: Record<string, unknown> | null;
+  modifiedAt: string | null;
+}
+
 export interface ChatSummary {
   id: string;
   startedAt: string;
@@ -63,6 +72,7 @@ export interface ChatSummary {
 
 type ServerEvent =
   | { type: "start"; id: string; chatId?: string | null }
+  | { type: "queued"; id: string; position: number }
   | { type: "chatCreated"; id: string; chat: ChatSummary }
   | { type: "response"; id: string; chatId?: string | null; modelId?: string; text: string; images?: ChatImageAttachment[]; tokenCount: number; tokensPerSecond: number }
   | { type: "ollamaChunk"; id: string; text?: string; images?: ChatImageAttachment[] }
@@ -96,6 +106,9 @@ export class ChatService {
   readonly ollamaModelsLoading = signal(false);
   readonly ollamaModelsError   = signal<string | null>(null);
   readonly currentOllamaModel  = signal<string | null>(null);
+  readonly ollamaCapabilities  = signal<string[]>([]);
+  readonly ollamaCapabilitiesLoading = signal(false);
+  readonly ollamaCapabilitiesError   = signal<string | null>(null);
   readonly ollamaUrl           = signal<string | null>(null);
 
   readonly chats         = signal<ChatSummary[]>([]);
@@ -117,6 +130,7 @@ export class ChatService {
   private shouldReconnect = true;
   private readonly outbox: string[] = [];
   private readonly pendingRpc = new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+  private ollamaDetailsRequestSeq = 0;
 
   connect(): void {
     if (
@@ -277,7 +291,9 @@ export class ChatService {
       this.ollamaModels.set(models);
       this.ollamaUrl.set(body.url ?? null);
       if (!this.currentOllamaModel() && models.length > 0) {
-        this.currentOllamaModel.set(models[0].id);
+        this.selectOllamaModel(models[0].id);
+      } else if (this.currentOllamaModel()) {
+        void this.loadOllamaModelDetails(this.currentOllamaModel()!);
       }
     } catch (err) {
       this.ollamaModels.set([]);
@@ -310,10 +326,40 @@ export class ChatService {
     const id = modelId.trim();
     if (!id) return;
     this.currentOllamaModel.set(id);
+    void this.loadOllamaModelDetails(id);
     this.ollamaModels.update((models) => {
       if (models.some((m) => m.id === id)) return models;
       return [{ id, name: id, modifiedAt: null, size: 0, digest: null, details: null }, ...models];
     });
+  }
+
+  private async loadOllamaModelDetails(modelId: string): Promise<void> {
+    const id = modelId.trim();
+    if (!id) return;
+    const requestSeq = ++this.ollamaDetailsRequestSeq;
+    this.ollamaCapabilitiesError.set(null);
+
+    this.ollamaCapabilities.set([]);
+    this.ollamaCapabilitiesLoading.set(true);
+    try {
+      const body = await this.rpc<{ model: OllamaModelDetails }>("showOllamaModel", { modelId: id });
+      if (requestSeq !== this.ollamaDetailsRequestSeq || this.currentOllamaModel() !== id) return;
+      const details: OllamaModelDetails = {
+        id,
+        capabilities: body.model?.capabilities ?? [],
+        details: body.model?.details ?? null,
+        modifiedAt: body.model?.modifiedAt ?? null,
+      };
+      this.ollamaCapabilities.set(details.capabilities);
+    } catch (err) {
+      if (requestSeq !== this.ollamaDetailsRequestSeq || this.currentOllamaModel() !== id) return;
+      this.ollamaCapabilities.set([]);
+      this.ollamaCapabilitiesError.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (requestSeq === this.ollamaDetailsRequestSeq) {
+        this.ollamaCapabilitiesLoading.set(false);
+      }
+    }
   }
 
   send(prompt: string, image?: ChatImageAttachment, options: ChatGenerationOptions = {}): void {
@@ -381,6 +427,23 @@ export class ChatService {
 
       case "start":
         if (event.chatId && !this.currentChatId()) this.currentChatId.set(event.chatId);
+        this.messages.update((list) =>
+          list.map((msg) =>
+            msg.id === `${event.id}:reply`
+              ? { ...msg, queued: false, queuePosition: undefined }
+              : msg
+          )
+        );
+        return;
+
+      case "queued":
+        this.messages.update((list) =>
+          list.map((msg) =>
+            msg.id === `${event.id}:reply`
+              ? { ...msg, pending: true, queued: true, queuePosition: event.position }
+              : msg
+          )
+        );
         return;
 
       case "chatCreated":
@@ -393,6 +456,7 @@ export class ChatService {
           list.map((msg) =>
             msg.id === `${event.id}:reply`
               ? { ...msg, text: event.text, images: event.images ?? [], pending: false,
+                  queued: false, queuePosition: undefined,
                   tokenCount: event.tokenCount, tokensPerSecond: event.tokensPerSecond,
                   modelId: event.modelId }
               : msg
@@ -417,6 +481,8 @@ export class ChatService {
                   text: `${msg.text ?? ""}${event.text ?? ""}`,
                   images: this.mergeImages(msg.images ?? [], event.images ?? []),
                   pending: true,
+                  queued: false,
+                  queuePosition: undefined,
                   provider: "ollama",
                 })
               : msg
@@ -433,6 +499,8 @@ export class ChatService {
                   text: event.text,
                   images: this.mergeImages(msg.images ?? [], event.images ?? []),
                   pending: false,
+                  queued: false,
+                  queuePosition: undefined,
                   provider: "ollama",
                   modelId: event.modelId,
                   tokenCount: event.evalCount ?? undefined,
@@ -455,7 +523,9 @@ export class ChatService {
         this.messages.update((list) => {
           if (replyId && list.some((m) => m.id === replyId)) {
             return list.map((msg) =>
-              msg.id === replyId ? { ...msg, text: `⚠ ${event.error}`, pending: false } : msg
+              msg.id === replyId
+                ? { ...msg, text: `⚠ ${event.error}`, pending: false, queued: false, queuePosition: undefined }
+                : msg
             );
           }
           return [...list, { id: crypto.randomUUID(), role: "assistant", text: `⚠ ${event.error}` }];
@@ -614,6 +684,10 @@ export class ChatService {
     this.ollamaModelsLoading.set(false);
     this.ollamaModelsError.set(null);
     this.currentOllamaModel.set(null);
+    this.ollamaCapabilities.set([]);
+    this.ollamaCapabilitiesLoading.set(false);
+    this.ollamaCapabilitiesError.set(null);
+    this.ollamaDetailsRequestSeq += 1;
     this.ollamaUrl.set(null);
   }
 
