@@ -469,95 +469,55 @@ await fastify.register(fastifyStatic, {
   decorateReply: false,
 });
 
-fastify.get("/api/health", async () => ({
-  ok: true,
-  model: modelProcess.currentModelId,
-  loading: modelProcess.loading,
-}));
+// ─── RPC handlers (invoked over WebSocket) ───────────────────────────
+async function rpcListModels({ refresh }) {
+  const hfModels = await listMlxCommunityModels(refresh === true);
+  const savedRows = stmt.allSaved.all();
+  if (savedRows.length === 0) return { models: hfModels };
 
-fastify.get("/api/models", async (req, reply) => {
-  try {
-    const hfModels = await listMlxCommunityModels(req.query?.refresh === "1");
-
-    // Merge locally-saved models (those the user has successfully loaded before)
-    // into the HuggingFace catalog.  Saved models that already appear in the HF
-    // list get a `saved: true` flag so the UI can highlight them; saved models
-    // that are NOT in the HF list (e.g. private or non-mlx-community repos) are
-    // appended at the end with zeroed download/likes counters.
-    const savedRows = stmt.allSaved.all();  // [{id, isVlm, lastUsed}]
-    if (savedRows.length > 0) {
-      const hfIds = new Set(hfModels.map((m) => m.id));
-      const savedIds = new Set(savedRows.map((r) => r.id));
-
-      // Mark HF models that are also in the saved set.
-      const merged = hfModels.map((m) => ({ ...m, saved: savedIds.has(m.id) }));
-
-      // Append saved models not present in the HF list.
-      for (const row of savedRows) {
-        if (!hfIds.has(row.id)) {
-          merged.push({ id: row.id, downloads: 0, likes: 0, updatedAt: null, saved: true });
-        }
-      }
-
-      // Sort: saved models first (by last_used desc), then HF models by downloads desc.
-      const savedOrder = new Map(savedRows.map((r, i) => [r.id, i]));
-      merged.sort((a, b) => {
-        const aSaved = a.saved ? savedOrder.get(a.id) ?? Infinity : Infinity;
-        const bSaved = b.saved ? savedOrder.get(b.id) ?? Infinity : Infinity;
-        if (aSaved !== bSaved) return aSaved - bSaved;
-        return b.downloads - a.downloads;
-      });
-
-      return { owner: MODELS_OWNER, models: merged };
+  const hfIds = new Set(hfModels.map((m) => m.id));
+  const savedIds = new Set(savedRows.map((r) => r.id));
+  const merged = hfModels.map((m) => ({ ...m, saved: savedIds.has(m.id) }));
+  for (const row of savedRows) {
+    if (!hfIds.has(row.id)) {
+      merged.push({ id: row.id, downloads: 0, likes: 0, updatedAt: null, saved: true });
     }
-
-    return { owner: MODELS_OWNER, models: hfModels };
-  } catch (err) {
-    reply.code(502);
-    return { error: err instanceof Error ? err.message : String(err), models: [] };
   }
-});
+  const savedOrder = new Map(savedRows.map((r, i) => [r.id, i]));
+  merged.sort((a, b) => {
+    const aSaved = a.saved ? savedOrder.get(a.id) ?? Infinity : Infinity;
+    const bSaved = b.saved ? savedOrder.get(b.id) ?? Infinity : Infinity;
+    if (aSaved !== bSaved) return aSaved - bSaved;
+    return b.downloads - a.downloads;
+  });
+  return { models: merged };
+}
 
-fastify.get("/api/models/failed", async () => ({
-  failed: stmt.allFailed.all(),
-}));
+function rpcListFailedModels() {
+  return { failed: stmt.allFailed.all() };
+}
 
-fastify.delete("/api/models/failed/:modelId", async (req, reply) => {
-  const { modelId } = req.params;
-  stmt.deleteFailed.run(modelId);
-  reply.code(204).send();
-});
-
-// ─── Chats REST ──────────────────────────────────────────────────────
-fastify.get("/api/chats", async (_req, reply) => {
-  if (!chatsCol) { reply.code(503); return { error: "Chat storage unavailable.", chats: [] }; }
+async function rpcListChats() {
+  if (!chatsCol) throw new Error("Chat storage unavailable.");
   const docs = await chatsCol
     .find({}, { projection: { messages: 0 } })
     .sort({ startedAt: -1 })
     .toArray();
-  return { chats: docs.map((d) => ({
-    id: d._id.toString(),
-    startedAt: d.startedAt instanceof Date ? d.startedAt.toISOString() : d.startedAt,
-    title: d.title ?? null,
-  })) };
-});
+  return {
+    chats: docs.map((d) => ({
+      id: d._id.toString(),
+      startedAt: d.startedAt instanceof Date ? d.startedAt.toISOString() : d.startedAt,
+      title: d.title ?? null,
+    })),
+  };
+}
 
-fastify.post("/api/chats", async (_req, reply) => {
-  try {
-    const chat = await createChat();
-    return chat;
-  } catch (err) {
-    reply.code(503);
-    return { error: err instanceof Error ? err.message : String(err) };
-  }
-});
-
-fastify.get("/api/chats/:id", async (req, reply) => {
-  if (!chatsCol) { reply.code(503); return { error: "Chat storage unavailable." }; }
+async function rpcOpenChat({ chatId }) {
+  if (!chatsCol) throw new Error("Chat storage unavailable.");
   let id;
-  try { id = new ObjectId(req.params.id); } catch { reply.code(400); return { error: "Invalid chat id." }; }
+  try { id = new ObjectId(chatId); } catch { throw new Error("Invalid chat id."); }
   const doc = await chatsCol.findOne({ _id: id });
-  if (!doc) { reply.code(404); return { error: "Chat not found." }; }
+  if (!doc) throw new Error("Chat not found.");
   return {
     id: doc._id.toString(),
     startedAt: doc.startedAt instanceof Date ? doc.startedAt.toISOString() : doc.startedAt,
@@ -573,28 +533,33 @@ fastify.get("/api/chats/:id", async (req, reply) => {
       tokensPerSecond: m.tokensPerSecond ?? undefined,
     })),
   };
-});
+}
 
-fastify.delete("/api/chats/:id", async (req, reply) => {
-  if (!chatsCol) { reply.code(503); return { error: "Chat storage unavailable." }; }
+async function rpcDeleteChat({ chatId }) {
+  if (!chatsCol) throw new Error("Chat storage unavailable.");
   let id;
-  try { id = new ObjectId(req.params.id); } catch { reply.code(400); return { error: "Invalid chat id." }; }
+  try { id = new ObjectId(chatId); } catch { throw new Error("Invalid chat id."); }
   await chatsCol.deleteOne({ _id: id });
-  reply.code(204).send();
-});
+  return { ok: true };
+}
 
-fastify.delete("/api/chats/:id/messages/:messageId", async (req, reply) => {
-  if (!chatsCol) { reply.code(503); return { error: "Chat storage unavailable." }; }
+async function rpcDeleteMessage({ chatId, messageId }) {
+  if (!chatsCol) throw new Error("Chat storage unavailable.");
+  if (typeof messageId !== "string" || !messageId) throw new Error("Invalid message id.");
   let id;
-  try { id = new ObjectId(req.params.id); } catch { reply.code(400); return { error: "Invalid chat id." }; }
-  const messageId = req.params.messageId;
-  if (typeof messageId !== "string" || !messageId) {
-    reply.code(400);
-    return { error: "Invalid message id." };
-  }
+  try { id = new ObjectId(chatId); } catch { throw new Error("Invalid chat id."); }
   await chatsCol.updateOne({ _id: id }, { $pull: { messages: { id: messageId } } });
-  reply.code(204).send();
-});
+  return { ok: true };
+}
+
+const rpcHandlers = {
+  listModels:       rpcListModels,
+  listFailedModels: rpcListFailedModels,
+  listChats:        rpcListChats,
+  openChat:         rpcOpenChat,
+  deleteChat:       rpcDeleteChat,
+  deleteMessage:    rpcDeleteMessage,
+};
 
 // ─── WebSocket endpoint ───────────────────────────────────────────────
 fastify.register(async (instance) => {
@@ -610,6 +575,22 @@ fastify.register(async (instance) => {
         payload = JSON.parse(raw.toString());
       } catch {
         socket.send(JSON.stringify({ type: "error", error: "Invalid JSON." }));
+        return;
+      }
+
+      // ── RPC dispatch ─────────────────────────────────────────────
+      if (typeof payload?.type === "string" && payload.type in rpcHandlers && typeof payload.requestId === "string") {
+        const requestId = payload.requestId;
+        try {
+          const data = await rpcHandlers[payload.type](payload);
+          socket.send(JSON.stringify({ type: "rpcResult", requestId, data }));
+        } catch (err) {
+          socket.send(JSON.stringify({
+            type: "rpcResult",
+            requestId,
+            error: err instanceof Error ? err.message : String(err),
+          }));
+        }
         return;
       }
 

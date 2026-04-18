@@ -57,7 +57,8 @@ type ServerEvent =
   | { type: "error"; id?: string; error: string }
   | { type: "modelLoading"; modelId: string | null }
   | { type: "modelReady";   modelId: string; isVLM?: boolean; canGenerateImages?: boolean }
-  | { type: "modelError";   modelId?: string; error: string; failed?: FailedModel[] };
+  | { type: "modelError";   modelId?: string; error: string; failed?: FailedModel[] }
+  | { type: "rpcResult"; requestId: string; data?: any; error?: string };
 
 @Injectable({ providedIn: "root" })
 export class ChatService {
@@ -68,23 +69,19 @@ export class ChatService {
   readonly pendingModel  = signal<string | null>(null);
   readonly modelLoading  = signal(false);
   readonly modelError    = signal<string | null>(null);
-  /** True when the active backend can run image-conditioned inference for this model. */
   readonly supportsVision = signal(false);
-  /** True when the active backend returns generated images from text prompts. */
   readonly supportsImageGeneration = signal(false);
 
   readonly availableModels = signal<HFModel[]>([]);
   readonly modelsLoading   = signal(false);
   readonly modelsError     = signal<string | null>(null);
 
-  /** Map of model-id → error string for all known-incompatible models. */
   readonly failedModels = signal<Map<string, string>>(new Map());
 
   readonly chats         = signal<ChatSummary[]>([]);
   readonly currentChatId = signal<string | null>(null);
   readonly chatsLoading  = signal(false);
 
-  /** Quick O(1) check used in the model selector. */
   readonly isFailedModel = computed(() => {
     const map = this.failedModels();
     return (id: string) => map.has(id);
@@ -97,6 +94,8 @@ export class ChatService {
 
   private socket?: WebSocket;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
+  private readonly outbox: string[] = [];
+  private readonly pendingRpc = new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 
   connect(): void {
     if (
@@ -109,22 +108,53 @@ export class ChatService {
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
     this.socket = ws;
 
-    ws.addEventListener("open",    () => this.connected.set(true));
-    ws.addEventListener("close",   () => { this.connected.set(false); this.busy.set(false); this.scheduleReconnect(); });
-    ws.addEventListener("error",   () => this.connected.set(false));
+    ws.addEventListener("open", () => {
+      this.connected.set(true);
+      while (this.outbox.length > 0) {
+        const msg = this.outbox.shift();
+        if (msg) ws.send(msg);
+      }
+    });
+    ws.addEventListener("close", () => {
+      this.connected.set(false);
+      this.busy.set(false);
+      // Fail any in-flight RPCs so callers can retry.
+      for (const [, handlers] of this.pendingRpc) {
+        handlers.reject(new Error("Connection closed."));
+      }
+      this.pendingRpc.clear();
+      this.scheduleReconnect();
+    });
+    ws.addEventListener("error", () => this.connected.set(false));
     ws.addEventListener("message", (ev) => {
       try { this.handleEvent(JSON.parse(ev.data) as ServerEvent); } catch {}
     });
   }
 
-  // ── REST calls ────────────────────────────────────────────────────
+  // ── RPC over WebSocket ────────────────────────────────────────────
+  private sendWs(obj: unknown): void {
+    const json = JSON.stringify(obj);
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(json);
+    } else {
+      this.outbox.push(json);
+    }
+  }
+
+  private rpc<T = any>(type: string, payload: Record<string, unknown> = {}): Promise<T> {
+    const requestId = crypto.randomUUID();
+    return new Promise<T>((resolve, reject) => {
+      this.pendingRpc.set(requestId, { resolve, reject });
+      this.sendWs({ type, requestId, ...payload });
+    });
+  }
+
+  // ── WS-backed data loaders ────────────────────────────────────────
   async loadAvailableModels(refresh = false): Promise<void> {
     this.modelsLoading.set(true);
     this.modelsError.set(null);
     try {
-      const res = await fetch(`/api/models${refresh ? "?refresh=1" : ""}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json() as { models: HFModel[] };
+      const body = await this.rpc<{ models: HFModel[] }>("listModels", { refresh });
       this.availableModels.set(body.models ?? []);
     } catch (err) {
       this.modelsError.set(err instanceof Error ? err.message : String(err));
@@ -136,9 +166,7 @@ export class ChatService {
   async loadChats(): Promise<void> {
     this.chatsLoading.set(true);
     try {
-      const res = await fetch("/api/chats");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json() as { chats: ChatSummary[] };
+      const body = await this.rpc<{ chats: ChatSummary[] }>("listChats");
       this.chats.set(body.chats ?? []);
     } catch {
       this.chats.set([]);
@@ -149,9 +177,7 @@ export class ChatService {
 
   async openChat(id: string): Promise<void> {
     try {
-      const res = await fetch(`/api/chats/${id}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json() as { id: string; messages: ChatMessage[] };
+      const body = await this.rpc<{ id: string; messages: ChatMessage[] }>("openChat", { chatId: id });
       this.currentChatId.set(body.id);
       this.messages.set((body.messages ?? []).map((m) => ({ ...m, pending: false })));
       this.busy.set(false);
@@ -164,49 +190,40 @@ export class ChatService {
     this.busy.set(false);
   }
 
-  async deleteMessage(messageId: string): Promise<void> {
-    const chatId = this.currentChatId();
-    this.messages.update((list) => list.filter((m) => m.id !== messageId));
-    if (!chatId) return;
-    try {
-      await fetch(`/api/chats/${chatId}/messages/${encodeURIComponent(messageId)}`, {
-        method: "DELETE",
-      });
-    } catch {}
-  }
-
   async deleteChat(id: string): Promise<void> {
-    try {
-      await fetch(`/api/chats/${id}`, { method: "DELETE" });
-    } catch {}
+    try { await this.rpc("deleteChat", { chatId: id }); } catch {}
     this.chats.update((list) => list.filter((c) => c.id !== id));
     if (this.currentChatId() === id) this.newChat();
   }
 
+  async deleteMessage(messageId: string): Promise<void> {
+    const chatId = this.currentChatId();
+    this.messages.update((list) => list.filter((m) => m.id !== messageId));
+    if (!chatId) return;
+    try { await this.rpc("deleteMessage", { chatId, messageId }); } catch {}
+  }
+
   async loadFailedModels(): Promise<void> {
     try {
-      const res  = await fetch("/api/models/failed");
-      if (!res.ok) return;
-      const body = await res.json() as { failed: FailedModel[] };
-      this.applyFailedList(body.failed);
+      const body = await this.rpc<{ failed: FailedModel[] }>("listFailedModels");
+      this.applyFailedList(body.failed ?? []);
     } catch {}
   }
 
-  // ── WS commands ───────────────────────────────────────────────────
+  // ── WS commands (fire-and-forget, existing events) ────────────────
   selectModel(modelId: string): void {
     const id = modelId.trim();
-    if (!id || this.modelLoading() || !this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    if (!id || this.modelLoading()) return;
     if (id === this.currentModel()) return;
     this.pendingModel.set(id);
     this.modelLoading.set(true);
     this.modelError.set(null);
-    this.socket.send(JSON.stringify({ type: "selectModel", modelId: id }));
+    this.sendWs({ type: "selectModel", modelId: id });
   }
 
   send(prompt: string, image?: ChatImageAttachment, options: ChatGenerationOptions = {}): void {
     const text = prompt.trim() || (image ? "Describe this image." : "");
-    if ((!text && !image) || this.busy() || this.modelLoading() || !this.currentModel() ||
-        !this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    if ((!text && !image) || this.busy() || this.modelLoading() || !this.currentModel()) return;
 
     const id = crypto.randomUUID();
     this.messages.update((list) => [
@@ -215,7 +232,7 @@ export class ChatService {
       { id: `${id}:reply`, role: "assistant", text: "", pending: true },
     ]);
     this.busy.set(true);
-    this.socket.send(JSON.stringify({
+    this.sendWs({
       type: "prompt",
       id,
       chatId: this.currentChatId(),
@@ -226,12 +243,21 @@ export class ChatService {
       imageHeight: options.imageHeight,
       steps: options.steps,
       seed: options.seed,
-    }));
+    });
   }
 
   // ── Event handling ────────────────────────────────────────────────
   private handleEvent(event: ServerEvent): void {
     switch (event.type) {
+      case "rpcResult": {
+        const handlers = this.pendingRpc.get(event.requestId);
+        if (!handlers) return;
+        this.pendingRpc.delete(event.requestId);
+        if (event.error) handlers.reject(new Error(event.error));
+        else handlers.resolve(event.data ?? {});
+        return;
+      }
+
       case "start":
         if (event.chatId && !this.currentChatId()) this.currentChatId.set(event.chatId);
         return;
@@ -290,7 +316,6 @@ export class ChatService {
         this.modelError.set(null);
         this.supportsVision.set(event.isVLM === true);
         this.supportsImageGeneration.set(event.canGenerateImages === true);
-        // Remove from failed set if it loaded OK this time.
         this.failedModels.update((m) => { const n = new Map(m); n.delete(event.modelId); return n; });
         return;
 
