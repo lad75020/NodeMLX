@@ -145,7 +145,52 @@
                   [alt]="image.name"
                 />
               </div>
-              <div *ngIf="!msg.pending && msg.text" class="bubble-text">{{ msg.text }}</div>
+              <div *ngIf="!msg.pending && msg.text" class="bubble-text">
+                <ng-container *ngIf="msg.role === 'assistant'; else plainBubbleText">
+                  <ng-container *ngFor="let block of formattedBlocks(msg)">
+                    <div *ngIf="block.kind === 'chapter'" class="bubble-chapter">
+                      <ng-container *ngFor="let segment of block.segments">
+                        <strong *ngIf="segment.bold; else chapterPlain">{{ segment.text }}</strong>
+                        <ng-template #chapterPlain>{{ segment.text }}</ng-template>
+                      </ng-container>
+                    </div>
+
+                    <div *ngIf="block.kind === 'paragraph'" class="bubble-paragraph">
+                      <ng-container *ngFor="let segment of block.segments">
+                        <strong *ngIf="segment.bold; else paragraphPlain">{{ segment.text }}</strong>
+                        <ng-template #paragraphPlain>{{ segment.text }}</ng-template>
+                      </ng-container>
+                    </div>
+
+                    <ul *ngIf="block.kind === 'list'" class="bubble-list">
+                      <li *ngFor="let item of block.items">
+                        <ng-container *ngFor="let segment of item">
+                          <strong *ngIf="segment.bold; else listPlain">{{ segment.text }}</strong>
+                          <ng-template #listPlain>{{ segment.text }}</ng-template>
+                        </ng-container>
+                      </li>
+                    </ul>
+
+                    <div *ngIf="block.kind === 'table'" class="bubble-table-wrap">
+                      <table class="bubble-table">
+                        <tbody>
+                          <tr *ngFor="let row of block.rows">
+                            <td *ngFor="let cell of row">
+                              <ng-container *ngFor="let segment of cell">
+                                <strong *ngIf="segment.bold; else tablePlain">{{ segment.text }}</strong>
+                                <ng-template #tablePlain>{{ segment.text }}</ng-template>
+                              </ng-container>
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </ng-container>
+                </ng-container>
+                <ng-template #plainBubbleText>
+                  <div class="bubble-text-plain">{{ msg.text }}</div>
+                </ng-template>
+              </div>
               <div
                 class="bubble-meta text-muted small mt-1"
                 *ngIf="msg.role === 'assistant' && (msg.tokensPerSecond || msg.images?.length)"

@@ -280,6 +280,53 @@
   font-size: 0.75rem;
 }
 
+.bubble-text {
+  white-space: normal;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.bubble-text-plain {
+  white-space: pre-wrap;
+}
+
+.bubble-chapter {
+  font-size: 1.02rem;
+  font-weight: 700;
+  margin-top: 0.1rem;
+}
+
+.bubble-paragraph {
+  line-height: 1.45;
+}
+
+.bubble-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.bubble-table-wrap {
+  overflow-x: auto;
+}
+
+.bubble-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+.bubble-table td {
+  border: 1px solid rgba(15, 23, 42, 0.18);
+  padding: 0.35rem 0.45rem;
+  vertical-align: top;
+}
+
+.bubble-assistant .bubble-table td {
+  background: rgba(255, 255, 255, 0.4);
+}
+
 .message-image {
   display: block;
   width: min(100%, 320px);

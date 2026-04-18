@@ -9,7 +9,7 @@ import {
 } from "@angular/core";
 import { CommonModule } from "@angular/common";
 import { FormsModule } from "@angular/forms";
-import { ChatImageAttachment, ChatService } from "./chat.service";
+import { ChatImageAttachment, ChatMessage, ChatService } from "./chat.service";
 import { ModelSelectorComponent } from "./model-selector.component";
 import { AuthService } from "./auth.service";
 
@@ -26,6 +26,17 @@ interface ImageGenerationPreset {
   height: number;
   steps: number;
 }
+
+interface FormattedTextSegment {
+  text: string;
+  bold: boolean;
+}
+
+type FormattedBlock =
+  | { kind: "chapter"; segments: FormattedTextSegment[] }
+  | { kind: "paragraph"; segments: FormattedTextSegment[] }
+  | { kind: "list"; items: FormattedTextSegment[][] }
+  | { kind: "table"; rows: FormattedTextSegment[][][] };
 
 @Component({
   selector: "app-root",
@@ -49,6 +60,7 @@ export class AppComponent implements OnInit, AfterViewChecked {
   protected imageSeed: number | null = null;
 
   private lastImagePresetModel: string | null = null;
+  private formattedTextCache = new Map<string, FormattedBlock[]>();
   private readonly imagePresetEffect = effect(() => {
     const modelId = this.chat.currentModel();
     if (!modelId || !this.chat.supportsImageGeneration()) {
@@ -255,6 +267,15 @@ export class AppComponent implements OnInit, AfterViewChecked {
     this.applyImagePreset(modelId);
   }
 
+  protected formattedBlocks(message: ChatMessage): FormattedBlock[] {
+    const key = `${message.id}::${message.text ?? ""}`;
+    const cached = this.formattedTextCache.get(key);
+    if (cached) return cached;
+    const parsed = this.parseFormattedBlocks(message.text ?? "");
+    this.formattedTextCache.set(key, parsed);
+    return parsed;
+  }
+
   private applyImagePreset(modelId: string): void {
     const preset = this.imagePresetForModel(modelId);
     this.imageWidth = preset.width;
@@ -290,6 +311,134 @@ export class AppComponent implements OnInit, AfterViewChecked {
     const seed = this.imageSeed;
     if (typeof seed !== "number" || !Number.isFinite(seed)) return undefined;
     return Math.min(MAX_IMAGE_SEED, Math.max(0, Math.trunc(seed)));
+  }
+
+  private parseFormattedBlocks(text: string): FormattedBlock[] {
+    const normalized = text.replace(/\r\n?/g, "\n");
+    const lines = normalized.split("\n");
+    const blocks: FormattedBlock[] = [];
+    let i = 0;
+
+    while (i < lines.length) {
+      const rawLine = lines[i];
+      const line = rawLine.trim();
+      if (!line) {
+        i += 1;
+        continue;
+      }
+
+      const chapterMatch = /^\s*###\s+(.+?)\s*$/.exec(rawLine);
+      if (chapterMatch) {
+        blocks.push({ kind: "chapter", segments: this.parseInlineSegments(chapterMatch[1]) });
+        i += 1;
+        continue;
+      }
+
+      const bulletText = this.parseBulletLine(rawLine);
+      if (bulletText !== null) {
+        const items: FormattedTextSegment[][] = [];
+        while (i < lines.length) {
+          const item = this.parseBulletLine(lines[i]);
+          if (item === null) break;
+          items.push(this.parseInlineSegments(item));
+          i += 1;
+        }
+        blocks.push({ kind: "list", items });
+        continue;
+      }
+
+      const tableRow = this.parseTableRow(rawLine);
+      if (tableRow) {
+        const rows: string[][] = [];
+        while (i < lines.length) {
+          const row = this.parseTableRow(lines[i]);
+          if (!row) break;
+          rows.push(row);
+          i += 1;
+        }
+
+        const contentRows = rows.filter((row) => !this.isTableSeparatorRow(row));
+        if (contentRows.length > 0) {
+          blocks.push({
+            kind: "table",
+            rows: contentRows.map((row) =>
+              row.map((cell) => this.parseInlineSegments(cell))
+            ),
+          });
+          continue;
+        }
+      }
+
+      const paragraphLines: string[] = [line];
+      i += 1;
+      while (i < lines.length) {
+        const next = lines[i];
+        const trimmedNext = next.trim();
+        if (!trimmedNext) {
+          i += 1;
+          break;
+        }
+        if (/^\s*###\s+/.test(next) || this.parseBulletLine(next) !== null || this.parseTableRow(next)) {
+          break;
+        }
+        paragraphLines.push(trimmedNext);
+        i += 1;
+      }
+      blocks.push({
+        kind: "paragraph",
+        segments: this.parseInlineSegments(paragraphLines.join(" ")),
+      });
+    }
+
+    if (blocks.length === 0 && text.trim()) {
+      blocks.push({ kind: "paragraph", segments: this.parseInlineSegments(text.trim()) });
+    }
+
+    return blocks;
+  }
+
+  private parseInlineSegments(text: string): FormattedTextSegment[] {
+    const segments: FormattedTextSegment[] = [];
+    const pattern = /\*\*(.+?)\*\*/g;
+    let cursor = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = pattern.exec(text)) !== null) {
+      if (match.index > cursor) {
+        segments.push({ text: text.slice(cursor, match.index), bold: false });
+      }
+      segments.push({ text: match[1], bold: true });
+      cursor = match.index + match[0].length;
+    }
+
+    if (cursor < text.length) {
+      segments.push({ text: text.slice(cursor), bold: false });
+    }
+
+    if (segments.length === 0) {
+      return [{ text, bold: false }];
+    }
+    return segments.filter((segment) => segment.text.length > 0);
+  }
+
+  private parseBulletLine(line: string): string | null {
+    const match = /^\s*\*\s+(.+?)\s*$/.exec(line);
+    return match ? match[1] : null;
+  }
+
+  private parseTableRow(line: string): string[] | null {
+    const trimmed = line.trim();
+    if (!trimmed.includes("|")) return null;
+
+    let cells = trimmed.split("|").map((part) => part.trim());
+    if (cells[0] === "") cells = cells.slice(1);
+    if (cells[cells.length - 1] === "") cells = cells.slice(0, -1);
+    if (cells.length < 2) return null;
+    return cells;
+  }
+
+  private isTableSeparatorRow(row: string[]): boolean {
+    return row.every((cell) => /^:?-{3,}:?$/.test(cell));
   }
 
   private readFileAsDataUrl(file: File): Promise<string> {
