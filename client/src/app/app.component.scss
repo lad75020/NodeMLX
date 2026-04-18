@@ -1,0 +1,374 @@
+:host {
+  display: block;
+  height: 100vh;
+}
+
+.app-layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  height: 100%;
+  min-height: 0;
+}
+
+.chat-sidebar {
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  border-right: 1px solid #e5e7eb;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  padding: 0.75rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.sidebar-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 0.5rem 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.chat-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: #1f2937;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.chat-item:hover {
+  background: #f3f4f6;
+}
+
+.chat-item.active {
+  background: #e8f0fe;
+  border-color: #b6cdfb;
+  color: #0a58ca;
+}
+
+.chat-item-main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.chat-item-date {
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-item-title {
+  font-size: 0.75rem;
+  color: #6b7280;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-item.active .chat-item-title {
+  color: #1e44a6;
+}
+
+.chat-item-delete {
+  flex: 0 0 auto;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: #6b7280;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.chat-item-delete:hover {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.chat-shell {
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-header,
+.chat-footer {
+  flex: 0 0 auto;
+}
+
+.chat-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+@media (max-width: 767.98px) {
+  .app-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .chat-sidebar {
+    max-height: 35vh;
+    border-right: none;
+    border-bottom: 1px solid #e5e7eb;
+  }
+}
+
+.chat-body {
+  background: #f5f7fb;
+}
+
+.capability-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 2rem;
+}
+
+.capability-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 1.65rem;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid #cfd7e3;
+  border-radius: 999px;
+  background: #f8f9fa;
+  color: #28323f;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.capability-badge svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.4;
+}
+
+.capability-vision {
+  border-color: #b7d7c4;
+  background: #e9f6ee;
+  color: #146c43;
+}
+
+.capability-image {
+  border-color: #bfd3ff;
+  background: #eef4ff;
+  color: #0a58ca;
+}
+
+.capability-text {
+  border-color: #d5d9df;
+  background: #f8f9fa;
+  color: #495057;
+}
+
+.bubble {
+  position: relative;
+  max-width: 78%;
+  padding: 0.65rem 0.9rem;
+  border-radius: 1rem;
+  line-height: 1.4;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.bubble-actions {
+  position: absolute;
+  right: 0.4rem;
+  bottom: 0.25rem;
+  display: flex;
+  gap: 0.15rem;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.bubble:hover .bubble-actions,
+.bubble:focus-within .bubble-actions {
+  opacity: 1;
+}
+
+.bubble-action {
+  width: 1.4rem;
+  height: 1.4rem;
+  padding: 0;
+  border: none;
+  border-radius: 0.35rem;
+  background: rgba(255, 255, 255, 0.6);
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  line-height: 0;
+}
+
+.bubble-action svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.bubble-action:hover {
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.bubble-action-danger:hover {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.bubble-user {
+  background: #cfe2ff;
+  color: #052c65;
+  border-bottom-right-radius: 0.25rem;
+}
+
+.bubble-assistant {
+  background: #d1e7dd;
+  color: #0a3622;
+  border-bottom-left-radius: 0.25rem;
+}
+
+.bubble-meta {
+  font-size: 0.75rem;
+}
+
+.message-image {
+  display: block;
+  width: min(100%, 320px);
+  max-height: 260px;
+  object-fit: contain;
+  border-radius: 0.5rem;
+  margin-bottom: 0.5rem;
+  background: #fff;
+}
+
+.generated-images {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.generated-image {
+  width: min(100%, 520px);
+  max-height: 520px;
+}
+
+.attachment-preview {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem;
+  border: 1px solid #dee2e6;
+  border-radius: 0.5rem;
+  background: #f8f9fa;
+}
+
+.attachment-preview img {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 0.375rem;
+  background: #fff;
+}
+
+.attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.generation-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.image-generation-controls {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(5.5rem, 1fr)) auto;
+  align-items: end;
+  gap: 0.5rem;
+}
+
+.image-control {
+  display: grid;
+  gap: 0.2rem;
+  margin: 0;
+}
+
+.image-control-narrow {
+  max-width: 6rem;
+}
+
+.image-preset-button {
+  min-height: 31px;
+}
+
+.max-tokens-input {
+  width: 8rem;
+}
+
+.pending {
+  font-style: italic;
+}
+
+textarea.form-control {
+  resize: none;
+}
+
+@media (max-width: 575.98px) {
+  .capability-strip {
+    width: 100%;
+    order: 3 !important;
+  }
+
+  .capability-badge {
+    max-width: 100%;
+  }
+
+  .image-generation-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .image-control-narrow {
+    max-width: none;
+  }
+
+  .image-preset-button {
+    grid-column: span 2;
+  }
+}

@@ -1,0 +1,348 @@
+<div class="app-layout">
+<aside class="chat-sidebar">
+  <div class="sidebar-header">
+    <button type="button" class="btn btn-primary btn-sm w-100" (click)="onNewChat()">+ New Chat</button>
+  </div>
+  <div class="sidebar-list">
+    <div *ngIf="chat.chats().length === 0" class="text-muted small px-2 py-3 text-center">
+      No previous chats
+    </div>
+    <button
+      type="button"
+      *ngFor="let c of chat.chats()"
+      class="chat-item"
+      [class.active]="c.id === chat.currentChatId()"
+      (click)="onSelectChat(c.id)"
+      [title]="c.title ?? formatChatLabel(c.startedAt)"
+    >
+      <div class="chat-item-main">
+        <div class="chat-item-date">{{ formatChatLabel(c.startedAt) }}</div>
+        <div *ngIf="c.title" class="chat-item-title">{{ c.title }}</div>
+      </div>
+      <button
+        type="button"
+        class="chat-item-delete"
+        (click)="onDeleteChat($event, c.id)"
+        aria-label="Delete chat"
+        title="Delete chat"
+      >×</button>
+    </button>
+  </div>
+</aside>
+<div class="chat-shell d-flex flex-column">
+  <header class="chat-header border-bottom bg-white px-3 py-2">
+    <div class="d-flex align-items-center gap-3 flex-wrap">
+      <h1 class="h5 mb-0 me-auto">NodeMLX Chat</h1>
+      <div
+        *ngIf="chat.currentModel() && !chat.modelLoading()"
+        class="capability-strip order-2 order-md-1"
+        aria-label="Loaded model capabilities"
+      >
+        <span
+          *ngIf="!chat.supportsVision() && !chat.supportsImageGeneration()"
+          class="capability-badge capability-text"
+          title="Text-only LLM"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M2.5 3h11v7.5h-7L3.2 13v-2.5h-.7z" />
+            <path d="M5 5.5h6M5 8h4" />
+          </svg>
+          <span>Text-only LLM</span>
+        </span>
+        <span
+          *ngIf="chat.supportsVision()"
+          class="capability-badge capability-vision"
+          title="Vision enabled model"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M1.8 8s2.2-4 6.2-4 6.2 4 6.2 4-2.2 4-6.2 4-6.2-4-6.2-4z" />
+            <circle cx="8" cy="8" r="2" />
+          </svg>
+          <span>Vision enabled</span>
+        </span>
+        <span
+          *ngIf="chat.supportsImageGeneration()"
+          class="capability-badge capability-image"
+          title="Image generation capable model"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="2.2" y="3" width="11.6" height="10" rx="1.2" />
+            <path d="M4 10.8 6.4 8l1.8 2 1.3-1.5 2.5 2.3M10.8 5.5h.01" />
+          </svg>
+          <span>Image generation</span>
+        </span>
+      </div>
+      <app-model-selector class="order-2 order-md-1"></app-model-selector>
+      <span
+        class="badge rounded-pill order-1 order-md-2"
+        [class.text-bg-success]="chat.connected()"
+        [class.text-bg-secondary]="!chat.connected()"
+      >
+        {{ chat.connected() ? "Connected" : "Disconnected" }}
+      </span>
+    </div>
+    <div
+      *ngIf="chat.modelError() as err"
+      class="alert alert-danger py-1 px-2 mb-0 mt-2 small"
+      role="alert"
+    >
+      {{ err }}
+    </div>
+  </header>
+
+  <main class="chat-body flex-grow-1 overflow-auto px-3 py-4">
+    <div class="container-fluid" style="max-width: 820px">
+      <div
+        class="text-center text-muted py-5"
+        *ngIf="chat.messages().length === 0"
+      >
+        <ng-container *ngIf="chat.currentModel() && !chat.modelLoading()">
+          {{ chat.supportsImageGeneration() ? "Describe the image you want to generate." : "Ask the model anything to get started." }}
+        </ng-container>
+        <ng-container *ngIf="chat.modelLoading()">
+          Loading model… this can take a moment on first run.
+        </ng-container>
+        <ng-container *ngIf="!chat.currentModel() && !chat.modelLoading()">
+          Pick an <code>mlx-community</code> model above to begin.
+        </ng-container>
+      </div>
+
+      <div
+        *ngFor="let msg of chat.messages()"
+        class="d-flex mb-3"
+        [class.justify-content-end]="msg.role === 'user'"
+        [class.justify-content-start]="msg.role === 'assistant'"
+      >
+        <div
+          class="bubble shadow-sm"
+          [class.bubble-user]="msg.role === 'user'"
+          [class.bubble-assistant]="msg.role === 'assistant'"
+        >
+          <div *ngIf="msg.pending" class="pending d-flex align-items-center gap-2">
+            <span class="spinner-border spinner-border-sm" role="status"></span>
+            <span class="text-muted">
+              {{ chat.supportsImageGeneration() && msg.role === "assistant" ? "generating…" : "thinking…" }}
+            </span>
+          </div>
+          <img
+            *ngIf="msg.image"
+            class="message-image"
+            [src]="msg.image.dataUrl"
+            [alt]="msg.image.name"
+          />
+          <div
+            *ngIf="!msg.pending && msg.images?.length"
+            class="generated-images"
+          >
+            <img
+              *ngFor="let image of msg.images"
+              class="message-image generated-image"
+              [src]="image.dataUrl"
+              [alt]="image.name"
+            />
+          </div>
+          <div *ngIf="!msg.pending && msg.text" class="bubble-text">{{ msg.text }}</div>
+          <div
+            class="bubble-meta text-muted small mt-1"
+            *ngIf="msg.role === 'assistant' && (msg.tokensPerSecond || msg.images?.length)"
+          >
+            <ng-container *ngIf="msg.images?.length; else tokenStats">
+              {{ msg.images?.length }} image{{ msg.images?.length === 1 ? "" : "s" }}
+            </ng-container>
+            <ng-template #tokenStats>
+              {{ msg.tokenCount }} tokens ·
+              {{ msg.tokensPerSecond | number: "1.0-1" }} tok/s
+            </ng-template>
+            <span *ngIf="msg.modelId">· {{ msg.modelId }}</span>
+          </div>
+          <div *ngIf="!msg.pending" class="bubble-actions">
+            <button
+              type="button"
+              class="bubble-action"
+              (click)="onCopyMessage(msg)"
+              aria-label="Copy message"
+              title="Copy"
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <rect x="5" y="5" width="8.5" height="9.5" rx="1.2" />
+                <path d="M10.5 5V3.2a1 1 0 0 0-1-1H3.7a1 1 0 0 0-1 1v7.1a1 1 0 0 0 1 1H5" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="bubble-action bubble-action-danger"
+              (click)="onDeleteMessage(msg.id)"
+              aria-label="Delete message"
+              title="Delete"
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M3 4.5h10M6.5 4.5V3.2a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1.3M4.5 4.5l.6 8.2a1 1 0 0 0 1 .9h3.8a1 1 0 0 0 1-.9l.6-8.2M7 7.5v4M9 7.5v4" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+      <div #scrollAnchor></div>
+    </div>
+  </main>
+
+  <footer class="chat-footer border-top bg-white p-3">
+    <form class="container-fluid p-0" style="max-width: 820px; margin: 0 auto" (ngSubmit)="submit()">
+      <div *ngIf="selectedImage" class="attachment-preview mb-2">
+        <img [src]="selectedImage.dataUrl" [alt]="selectedImage.name" />
+        <div class="attachment-info">
+          <div class="attachment-name">{{ selectedImage.name }}</div>
+          <div class="attachment-size text-muted small">
+            {{ selectedImage.size / 1024 / 1024 | number: "1.1-1" }} MB
+          </div>
+        </div>
+        <button
+          type="button"
+          class="btn btn-sm btn-outline-secondary"
+          (click)="clearImage()"
+          aria-label="Remove attached image"
+        >
+          Remove
+        </button>
+      </div>
+      <div *ngIf="imageError" class="text-danger small mb-2">{{ imageError }}</div>
+      <div
+        *ngIf="selectedImage && !chat.supportsVision() && chat.currentModel()"
+        class="text-warning small mb-2"
+      >
+        Image input is not available for this model in the current backend.
+      </div>
+      <div
+        *ngIf="chat.supportsImageGeneration(); else textGenerationControls"
+        class="image-generation-controls mb-2"
+      >
+        <label class="image-control">
+          <span class="form-label small text-muted mb-0">Width</span>
+          <input
+            class="form-control form-control-sm"
+            type="number"
+            min="64"
+            max="2048"
+            step="8"
+            [(ngModel)]="imageWidth"
+            name="imageWidth"
+            [disabled]="!chat.connected() || chat.busy() || chat.modelLoading() || !chat.currentModel()"
+          />
+        </label>
+        <label class="image-control">
+          <span class="form-label small text-muted mb-0">Height</span>
+          <input
+            class="form-control form-control-sm"
+            type="number"
+            min="64"
+            max="2048"
+            step="8"
+            [(ngModel)]="imageHeight"
+            name="imageHeight"
+            [disabled]="!chat.connected() || chat.busy() || chat.modelLoading() || !chat.currentModel()"
+          />
+        </label>
+        <label class="image-control image-control-narrow">
+          <span class="form-label small text-muted mb-0">Steps</span>
+          <input
+            class="form-control form-control-sm"
+            type="number"
+            min="1"
+            max="150"
+            step="1"
+            [(ngModel)]="imageSteps"
+            name="imageSteps"
+            [disabled]="!chat.connected() || chat.busy() || chat.modelLoading() || !chat.currentModel()"
+          />
+        </label>
+        <label class="image-control">
+          <span class="form-label small text-muted mb-0">Seed</span>
+          <input
+            class="form-control form-control-sm"
+            type="number"
+            min="0"
+            max="2147483647"
+            step="1"
+            placeholder="Random"
+            [(ngModel)]="imageSeed"
+            name="imageSeed"
+            [disabled]="!chat.connected() || chat.busy() || chat.modelLoading() || !chat.currentModel()"
+          />
+        </label>
+        <button
+          type="button"
+          class="btn btn-sm btn-outline-secondary image-preset-button"
+          title="Reset image settings to this model's preset"
+          (click)="resetImagePreset()"
+          [disabled]="!chat.connected() || chat.busy() || chat.modelLoading() || !chat.currentModel()"
+        >
+          Preset
+        </button>
+      </div>
+      <ng-template #textGenerationControls>
+        <div class="generation-controls mb-2">
+          <label class="form-label small text-muted mb-0" for="maxTokens">
+            Max tokens
+          </label>
+          <input
+            id="maxTokens"
+            class="form-control form-control-sm max-tokens-input"
+            type="number"
+            min="1"
+            max="32768"
+            step="256"
+            [(ngModel)]="maxTokens"
+            name="maxTokens"
+            [disabled]="!chat.connected() || chat.busy() || chat.modelLoading() || !chat.currentModel()"
+          />
+        </div>
+      </ng-template>
+
+      <div class="input-group">
+        <input
+          #imageInput
+          class="visually-hidden"
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          (change)="onImageSelected($event)"
+          [disabled]="!canAttachImage()"
+        />
+        <button
+          type="button"
+          class="btn btn-outline-secondary"
+          [class.btn-outline-secondary]="chat.supportsVision()"
+          [class.btn-outline-light]="!chat.supportsVision()"
+          (click)="imageInput.click()"
+          [disabled]="!canAttachImage()"
+          aria-label="Attach image"
+          [title]="imageButtonTooltip()"
+        >
+          📎
+        </button>
+        <textarea
+          class="form-control"
+          rows="2"
+          [placeholder]="chat.supportsImageGeneration() ? 'Describe an image to generate…' : 'Type a message… attach an image for multimodal models'"
+          [(ngModel)]="prompt"
+          name="prompt"
+          (keydown)="onKeydown($event)"
+          [disabled]="!chat.connected() || chat.busy() || chat.modelLoading() || !chat.currentModel()"
+          aria-label="Prompt"
+        ></textarea>
+        <button
+          type="submit"
+          class="btn btn-primary"
+          [disabled]="!canSend()"
+        >
+          <span
+            *ngIf="chat.busy()"
+            class="spinner-border spinner-border-sm me-2"
+            role="status"
+          ></span>
+          Send
+        </button>
+      </div>
+    </form>
+  </footer>
+</div>
+</div>

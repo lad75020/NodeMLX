@@ -1,0 +1,23 @@
+{
+  "name": "node-mlx-chat",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "client:install": "cd client && npm install",
+    "client:build": "cd client && npm run build",
+    "client:dev": "cd client && npm start",
+    "build": "npm run client:install && npm run client:build",
+    "setup": "npm install && npm run build"
+  },
+  "dependencies": {
+    "@fastify/static": "^7.0.4",
+    "@fastify/websocket": "^10.0.1",
+    "@huggingface/hub": "^1.0.0",
+    "better-sqlite3": "^11.10.0",
+    "fastify": "^4.28.1",
+    "mongodb": "^7.1.1",
+    "node-mlx": "^2.3.0"
+  }
+}

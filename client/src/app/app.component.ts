@@ -1,0 +1,269 @@
+import {
+  AfterViewChecked,
+  Component,
+  ElementRef,
+  effect,
+  OnInit,
+  ViewChild,
+  inject,
+} from "@angular/core";
+import { CommonModule } from "@angular/common";
+import { FormsModule } from "@angular/forms";
+import { ChatImageAttachment, ChatService } from "./chat.service";
+import { ModelSelectorComponent } from "./model-selector.component";
+
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const DEFAULT_MAX_TOKENS = 4096;
+const MAX_GENERATION_TOKENS = 32768;
+const MAX_IMAGE_DIMENSION = 2048;
+const MAX_IMAGE_STEPS = 150;
+const MAX_IMAGE_SEED = 2 ** 31 - 1;
+
+interface ImageGenerationPreset {
+  width: number;
+  height: number;
+  steps: number;
+}
+
+@Component({
+  selector: "app-root",
+  standalone: true,
+  imports: [CommonModule, FormsModule, ModelSelectorComponent],
+  templateUrl: "./app.component.html",
+  styleUrl: "./app.component.scss",
+})
+export class AppComponent implements OnInit, AfterViewChecked {
+  protected readonly chat = inject(ChatService);
+  protected prompt = "";
+  protected selectedImage: ChatImageAttachment | null = null;
+  protected imageError: string | null = null;
+  protected maxTokens = DEFAULT_MAX_TOKENS;
+  protected imageWidth = 768;
+  protected imageHeight = 768;
+  protected imageSteps = 30;
+  protected imageSeed: number | null = null;
+
+  private lastImagePresetModel: string | null = null;
+  private readonly imagePresetEffect = effect(() => {
+    const modelId = this.chat.currentModel();
+    if (!modelId || !this.chat.supportsImageGeneration()) {
+      this.lastImagePresetModel = null;
+      return;
+    }
+    if (modelId === this.lastImagePresetModel) return;
+    this.applyImagePreset(modelId);
+    this.lastImagePresetModel = modelId;
+  });
+
+  @ViewChild("scrollAnchor") private scrollAnchor?: ElementRef<HTMLDivElement>;
+  private lastLength = 0;
+
+  ngOnInit(): void {
+    this.chat.connect();
+    void this.chat.loadChats();
+  }
+
+  protected formatChatLabel(startedAt: string): string {
+    const d = new Date(startedAt);
+    if (Number.isNaN(d.getTime())) return startedAt;
+    return d.toLocaleString(undefined, {
+      year: "numeric", month: "short", day: "2-digit",
+      hour: "2-digit", minute: "2-digit",
+    });
+  }
+
+  protected onNewChat(): void {
+    this.chat.newChat();
+  }
+
+  protected onSelectChat(id: string): void {
+    if (this.chat.currentChatId() === id) return;
+    void this.chat.openChat(id);
+  }
+
+  protected async onCopyMessage(msg: { text?: string }): Promise<void> {
+    const text = msg.text ?? "";
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } finally { document.body.removeChild(ta); }
+    }
+  }
+
+  protected onDeleteMessage(id: string): void {
+    if (!confirm("Delete this message?")) return;
+    void this.chat.deleteMessage(id);
+  }
+
+  protected onDeleteChat(event: Event, id: string): void {
+    event.stopPropagation();
+    if (!confirm("Delete this chat?")) return;
+    void this.chat.deleteChat(id);
+  }
+
+  ngAfterViewChecked(): void {
+    const list = this.chat.messages();
+    if (list.length !== this.lastLength) {
+      this.lastLength = list.length;
+      queueMicrotask(() =>
+        this.scrollAnchor?.nativeElement.scrollIntoView({ behavior: "smooth" })
+      );
+    }
+  }
+
+  submit(): void {
+    if ((!this.prompt.trim() && !this.selectedImage) || this.chat.busy()) return;
+    const options = this.chat.supportsImageGeneration()
+      ? {
+          imageWidth: this.normalizedImageDimension(this.imageWidth, "width"),
+          imageHeight: this.normalizedImageDimension(this.imageHeight, "height"),
+          steps: this.normalizedImageSteps(),
+          seed: this.normalizedImageSeed(),
+        }
+      : { maxTokens: this.normalizedMaxTokens() };
+    this.chat.send(this.prompt, this.selectedImage ?? undefined, options);
+    this.prompt = "";
+    this.clearImage();
+  }
+
+  onKeydown(event: KeyboardEvent): void {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      this.submit();
+    }
+  }
+
+  async onImageSelected(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+
+    this.imageError = null;
+    if (!ALLOWED_IMAGE_TYPES.has(file.type)) {
+      this.imageError = "Use a JPEG, PNG, WebP, or GIF image.";
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      this.imageError = "Image must be 10 MB or smaller.";
+      return;
+    }
+
+    try {
+      const dataUrl = await this.readFileAsDataUrl(file);
+      this.selectedImage = {
+        dataUrl,
+        name: file.name,
+        type: file.type,
+        size: file.size,
+      };
+    } catch (err) {
+      this.imageError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  clearImage(): void {
+    this.selectedImage = null;
+    this.imageError = null;
+  }
+
+  protected canSend(): boolean {
+    return (
+      this.chat.connected() &&
+      !this.chat.busy() &&
+      !this.chat.modelLoading() &&
+      !!this.chat.currentModel() &&
+      (!this.selectedImage || this.chat.supportsVision()) &&
+      (!!this.prompt.trim() || !!this.selectedImage)
+    );
+  }
+
+  protected canAttachImage(): boolean {
+    return (
+      this.chat.connected() &&
+      !this.chat.busy() &&
+      !this.chat.modelLoading() &&
+      !!this.chat.currentModel() &&
+      this.chat.supportsVision()
+    );
+  }
+
+  protected imageButtonTooltip(): string {
+    if (!this.chat.currentModel()) return "Select a model first";
+    if (this.chat.modelLoading())  return "Model is loading…";
+    if (!this.chat.supportsVision()) {
+      return "Image input is not available for this model in the current backend";
+    }
+    return "Attach an image";
+  }
+
+  protected normalizedMaxTokens(): number {
+    if (!Number.isFinite(this.maxTokens)) return DEFAULT_MAX_TOKENS;
+    return Math.min(
+      MAX_GENERATION_TOKENS,
+      Math.max(1, Math.trunc(this.maxTokens))
+    );
+  }
+
+  protected resetImagePreset(): void {
+    const modelId = this.chat.currentModel();
+    if (!modelId) return;
+    this.applyImagePreset(modelId);
+  }
+
+  private applyImagePreset(modelId: string): void {
+    const preset = this.imagePresetForModel(modelId);
+    this.imageWidth = preset.width;
+    this.imageHeight = preset.height;
+    this.imageSteps = preset.steps;
+    this.imageSeed = null;
+  }
+
+  private imagePresetForModel(modelId: string): ImageGenerationPreset {
+    if (/(^|\/)(mlx-)?z-image($|[-_])/i.test(modelId)) {
+      return { width: 1024, height: 1024, steps: 9 };
+    }
+    return { width: 768, height: 768, steps: 30 };
+  }
+
+  private normalizedImageDimension(value: number, key: "width" | "height"): number {
+    const preset = this.imagePresetForModel(this.chat.currentModel() ?? "");
+    if (!Number.isFinite(value)) return preset[key];
+    const clamped = Math.min(
+      MAX_IMAGE_DIMENSION,
+      Math.max(64, Math.trunc(value))
+    );
+    return Math.max(64, Math.round(clamped / 8) * 8);
+  }
+
+  private normalizedImageSteps(): number {
+    const preset = this.imagePresetForModel(this.chat.currentModel() ?? "");
+    if (!Number.isFinite(this.imageSteps)) return preset.steps;
+    return Math.min(MAX_IMAGE_STEPS, Math.max(1, Math.trunc(this.imageSteps)));
+  }
+
+  private normalizedImageSeed(): number | undefined {
+    const seed = this.imageSeed;
+    if (typeof seed !== "number" || !Number.isFinite(seed)) return undefined;
+    return Math.min(MAX_IMAGE_SEED, Math.max(0, Math.trunc(seed)));
+  }
+
+  private readFileAsDataUrl(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error("Could not read image."));
+      reader.onload = () => {
+        if (typeof reader.result === "string") resolve(reader.result);
+        else reject(new Error("Could not read image."));
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+}

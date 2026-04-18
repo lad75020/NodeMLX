@@ -1,0 +1,118 @@
+<div class="model-selector position-relative">
+  <label class="form-label small text-muted mb-1" for="model-input">
+    Model
+    <span
+      *ngIf="chat.modelLoading()"
+      class="spinner-border spinner-border-sm ms-1"
+      role="status"
+      aria-hidden="true"
+    ></span>
+  </label>
+
+  <div class="input-group input-group-sm">
+    <input
+      #input
+      id="model-input"
+      type="text"
+      class="form-control"
+      autocomplete="off"
+      spellcheck="false"
+      [placeholder]="statusLabel()"
+      [value]="query()"
+      (input)="onInput($any($event.target).value)"
+      (focus)="openPanel()"
+      (keydown)="onKey($event)"
+      [disabled]="chat.modelLoading() || !chat.connected()"
+      aria-label="Search MLX models"
+    />
+    <button
+      type="button"
+      class="btn btn-outline-secondary"
+      title="Load typed model ID"
+      (click)="selectTypedModel()"
+      [disabled]="!typedModelId() || chat.modelLoading() || !chat.connected()"
+    >
+      Load
+    </button>
+    <button
+      type="button"
+      class="btn btn-outline-secondary"
+      title="Refresh model list from HuggingFace"
+      (click)="refresh()"
+      [disabled]="chat.modelsLoading()"
+    >
+      <span
+        *ngIf="chat.modelsLoading()"
+        class="spinner-border spinner-border-sm"
+        role="status"
+      ></span>
+      <span *ngIf="!chat.modelsLoading()">⟳</span>
+    </button>
+  </div>
+
+  <!-- Incompatible-model warning under the input -->
+  <div
+    *ngIf="chat.modelError() as err"
+    class="model-error-hint small text-danger mt-1"
+  >
+    ⚠ {{ err }}
+  </div>
+
+  <div
+    *ngIf="open() && !chat.modelLoading()"
+    class="dropdown-panel shadow border rounded bg-white"
+    role="listbox"
+  >
+    <!-- Error fetching list -->
+    <div *ngIf="chat.modelsError() as err" class="p-2 small text-danger">
+      Failed to load models: {{ err }}
+    </div>
+
+    <!-- Empty state -->
+    <div
+      *ngIf="!chat.modelsError() && filtered().length === 0"
+      class="p-2 small text-muted"
+    >
+      <ng-container *ngIf="chat.modelsLoading()">Loading…</ng-container>
+      <ng-container *ngIf="!chat.modelsLoading()">
+        No matches. Press Enter or Load to use the typed model ID.
+      </ng-container>
+    </div>
+
+    <button
+      type="button"
+      *ngFor="let m of filtered(); let i = index; trackBy: trackById"
+      class="dropdown-item d-flex justify-content-between align-items-center"
+      [class.active]="i === highlighted()"
+      [class.is-current]="m.id === chat.currentModel()"
+      [class.is-failed]="chat.isFailedModel()(m.id)"
+      [title]="chat.isFailedModel()(m.id)
+                 ? ('Incompatible: ' + chat.failedModelError()(m.id))
+                 : m.id"
+      (click)="select(m)"
+      (mouseenter)="highlighted.set(i)"
+      role="option"
+    >
+      <!-- Saved / failed icons -->
+      <span
+        *ngIf="chat.isFailedModel()(m.id)"
+        class="failed-badge me-1"
+        aria-hidden="true"
+        title="This model crashed on load"
+      >✕</span>
+      <span
+        *ngIf="m.saved && !chat.isFailedModel()(m.id)"
+        class="saved-badge me-1"
+        aria-hidden="true"
+        title="Previously loaded on this machine"
+      >★</span>
+
+      <span class="text-truncate me-2">{{ shorten(m.id) }}</span>
+
+      <small class="text-muted flex-shrink-0">
+        <ng-container *ngIf="m.downloads > 0">↓ {{ m.downloads | number }} · ♥ {{ m.likes | number }}</ng-container>
+        <ng-container *ngIf="m.downloads === 0 && m.saved">saved</ng-container>
+      </small>
+    </button>
+  </div>
+</div>

@@ -1,0 +1,14 @@
+node_modules/
+client/node_modules/
+client/dist/
+client/.angular/
+node-mlx/
+*.db
+*.log
+.DS_Store
+.claude/
+__pycache__/
+*.pyc
+
+# Temp image dirs (created at runtime)
+/tmp/nodemlx-*
