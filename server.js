@@ -34,6 +34,7 @@ const PORT = Number(process.env.PORT ?? 3000);
 const HOST = process.env.HOST ?? "127.0.0.1";
 const MODELS_OWNER = "mlx-community";
 const MODELS_TTL_MS = 10 * 60 * 1000;
+const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://127.0.0.1:11434";
 const IMAGE_TMP_DIR = join(tmpdir(), "nodemlx-chat-images");
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const SESSION_COOKIE_NAME = "nodemlx_session";
@@ -342,6 +343,22 @@ async function appendChatMessages(userId, chatId, entries) {
   await chatsCol.updateOne({ _id: id, userId }, update);
 }
 
+async function ensureUserChat(userId, chatId) {
+  if (!chatsCol) return { chatId: null, created: null };
+  if (chatId) {
+    try {
+      const id = new ObjectId(chatId);
+      const exists = await chatsCol.findOne(
+        { _id: id, userId },
+        { projection: { _id: 1 } }
+      );
+      if (exists) return { chatId, created: null };
+    } catch {}
+  }
+  const created = await createChat(userId);
+  return { chatId: created.id, created };
+}
+
 // ─── WebSocket broadcast helpers ─────────────────────────────────────
 const sockets = new Set();
 function broadcast(msg) {
@@ -644,6 +661,364 @@ async function listMlxCommunityModels(force = false) {
   return out;
 }
 
+// ─── Ollama helpers ─────────────────────────────────────────────────
+async function listOllamaModels() {
+  const res = await fetch(`${OLLAMA_URL}/api/tags`);
+  if (!res.ok) {
+    throw new Error(`Ollama model list failed (${res.status}).`);
+  }
+  const body = await res.json();
+  const models = Array.isArray(body?.models) ? body.models : [];
+  return models
+    .map((m) => ({
+      id: typeof m.name === "string" ? m.name : "",
+      name: typeof m.name === "string" ? m.name : "",
+      modifiedAt: typeof m.modified_at === "string" ? m.modified_at : null,
+      size: typeof m.size === "number" ? m.size : 0,
+      digest: typeof m.digest === "string" ? m.digest : null,
+      details: m.details && typeof m.details === "object" ? m.details : null,
+    }))
+    .filter((m) => m.id.length > 0)
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function collectOllamaImages(parsed) {
+  const images = [];
+  addOllamaImageCandidate(images, parsed?.images);
+  addOllamaImageCandidate(images, parsed?.image);
+  addOllamaImageCandidate(images, parsed?.message?.images);
+  addOllamaImageCandidate(images, parsed?.message?.image);
+  addOllamaImageCandidate(images, parsed?.response?.images);
+  addOllamaImageCandidate(images, parsed?.response?.image);
+  addOllamaImageCandidate(images, parsed?.artifacts);
+  addOllamaImageCandidate(images, parsed?.data);
+  return images;
+}
+
+function addOllamaImageCandidate(images, candidate) {
+  if (!candidate) return;
+  if (Array.isArray(candidate)) {
+    for (const item of candidate) addOllamaImageCandidate(images, item);
+    return;
+  }
+
+  const normalized = normalizeOllamaImage(candidate, images.length + 1);
+  if (normalized) {
+    if (!images.some((image) => image.dataUrl === normalized.dataUrl)) images.push(normalized);
+    return;
+  }
+
+  if (typeof candidate !== "object") return;
+  for (const key of ["images", "image", "artifacts", "data"]) {
+    if (Object.hasOwn(candidate, key)) addOllamaImageCandidate(images, candidate[key]);
+  }
+}
+
+function normalizeOllamaImage(candidate, index) {
+  if (typeof candidate === "string") {
+    return normalizeOllamaImageSource(candidate, undefined, undefined, index);
+  }
+  if (!candidate || typeof candidate !== "object") return null;
+
+  const mimeType =
+    firstString(candidate.mimeType, candidate.mime_type, candidate.mediaType, candidate.media_type, candidate.type) ??
+    undefined;
+  const name = firstString(candidate.name, candidate.filename, candidate.fileName, candidate.alt) ?? undefined;
+
+  for (const key of ["dataUrl", "data_url", "url", "src", "b64_json", "base64", "image", "data"]) {
+    const value = candidate[key];
+    if (typeof value !== "string") continue;
+    const normalized = normalizeOllamaImageSource(value, mimeType, name, index);
+    if (normalized) return normalized;
+  }
+
+  return null;
+}
+
+function normalizeOllamaImageSource(rawSource, hintMimeType, hintName, index) {
+  const source = rawSource.trim();
+  if (!source) return null;
+
+  const dataUrl = normalizeImageDataUrl(source, hintMimeType);
+  if (dataUrl) {
+    return {
+      dataUrl: dataUrl.url,
+      name: hintName ?? `Ollama image ${index}`,
+      type: dataUrl.type,
+      size: dataUrl.size,
+    };
+  }
+
+  if (/^https?:\/\//i.test(source)) {
+    return {
+      dataUrl: source,
+      name: hintName ?? imageNameFromUrl(source, index),
+      type: imageTypeFromUrl(source),
+      size: 0,
+    };
+  }
+
+  const base64 = source.replace(/\s+/g, "");
+  const type = inferBase64ImageMime(base64, hintMimeType);
+  if (!type) return null;
+  return {
+    dataUrl: `data:${type};base64,${base64}`,
+    name: hintName ?? `Ollama image ${index}`,
+    type,
+    size: Math.floor((base64.length * 3) / 4),
+  };
+}
+
+function normalizeImageDataUrl(source, hintMimeType) {
+  const dataMatch = /^data:(image\/[^;,]+);base64,([\s\S]+)$/i.exec(source);
+  if (dataMatch) {
+    const type = dataMatch[1].toLowerCase();
+    const base64 = dataMatch[2].replace(/\s+/g, "");
+    if (!isLikelyBase64(base64)) return null;
+    return {
+      url: `data:${type};base64,${base64}`,
+      type,
+      size: Math.floor((base64.length * 3) / 4),
+    };
+  }
+
+  const mimeMatch = /^(image\/[^;,]+);base64,([\s\S]+)$/i.exec(source);
+  if (mimeMatch) {
+    const type = mimeMatch[1].toLowerCase();
+    const base64 = mimeMatch[2].replace(/\s+/g, "");
+    if (!isLikelyBase64(base64)) return null;
+    return {
+      url: `data:${type};base64,${base64}`,
+      type,
+      size: Math.floor((base64.length * 3) / 4),
+    };
+  }
+
+  if (hintMimeType && /^image\//i.test(hintMimeType)) {
+    const base64 = source.replace(/\s+/g, "");
+    if (!isLikelyBase64(base64)) return null;
+    const type = hintMimeType.toLowerCase();
+    return {
+      url: `data:${type};base64,${base64}`,
+      type,
+      size: Math.floor((base64.length * 3) / 4),
+    };
+  }
+
+  return null;
+}
+
+function inferBase64ImageMime(base64, hintMimeType) {
+  if (!isLikelyBase64(base64)) return null;
+  if (hintMimeType && /^image\//i.test(hintMimeType)) return hintMimeType.toLowerCase();
+
+  let bytes;
+  try {
+    bytes = Buffer.from(base64.slice(0, 96), "base64");
+  } catch {
+    return null;
+  }
+  if (bytes.length < 8) return null;
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return "image/gif";
+  if (
+    bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+  ) return "image/webp";
+  if (bytes.toString("utf8", 0, Math.min(bytes.length, 16)).trimStart().startsWith("<svg")) return "image/svg+xml";
+  return null;
+}
+
+function isLikelyBase64(value) {
+  return value.length >= 64 && /^[A-Za-z0-9+/]+={0,2}$/.test(value);
+}
+
+function firstString(...values) {
+  return values.find((value) => typeof value === "string" && value.trim().length > 0)?.trim();
+}
+
+function imageNameFromUrl(source, index) {
+  try {
+    const url = new URL(source);
+    return decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() || `Ollama image ${index}`);
+  } catch {
+    return `Ollama image ${index}`;
+  }
+}
+
+function imageTypeFromUrl(source) {
+  const path = source.split("?")[0].toLowerCase();
+  if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
+  if (path.endsWith(".png")) return "image/png";
+  if (path.endsWith(".gif")) return "image/gif";
+  if (path.endsWith(".webp")) return "image/webp";
+  if (path.endsWith(".svg")) return "image/svg+xml";
+  return "image";
+}
+
+function mergeOllamaImages(existing, next) {
+  const bySource = new Map();
+  for (const image of [...existing, ...next]) {
+    if (!bySource.has(image.dataUrl)) bySource.set(image.dataUrl, image);
+  }
+  return [...bySource.values()];
+}
+
+function ollamaResponseText(parsed) {
+  if (typeof parsed?.response === "string") return parsed.response;
+  if (typeof parsed?.message?.content === "string") return parsed.message.content;
+  if (typeof parsed?.content === "string") return parsed.content;
+  if (typeof parsed?.text === "string") return parsed.text;
+  return "";
+}
+
+function extractOllamaImagesFromText(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return { text, images: [] };
+
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const images = collectOllamaImages(parsed);
+      if (images.length > 0) {
+        const nestedText = ollamaResponseText(parsed);
+        return { text: nestedText.trim(), images };
+      }
+    } catch {
+      // Keep the original text when it is not a complete JSON response.
+    }
+  }
+
+  const image = normalizeOllamaImageSource(trimmed, undefined, undefined, 1);
+  if (image) return { text: "", images: [image] };
+  return { text, images: [] };
+}
+
+async function streamOllamaPrompt(socket, payload, userId) {
+  const id = payload.id ?? String(Date.now());
+  const model = typeof payload.modelId === "string" ? payload.modelId.trim() : "";
+  const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
+  if (!model) throw new Error("Ollama model required.");
+  if (!prompt) throw new Error("Prompt required.");
+
+  const { chatId, created } = await ensureUserChat(
+    userId,
+    typeof payload.chatId === "string" ? payload.chatId : null
+  );
+  if (created) {
+    socket.send(JSON.stringify({ type: "chatCreated", id, chat: created }));
+  }
+
+  const controller = new AbortController();
+  const onClose = () => controller.abort();
+  socket.once?.("close", onClose);
+
+  const userAt = new Date();
+  let fullText = "";
+  let generatedImages = [];
+  let finalStats = {};
+  socket.send(JSON.stringify({ type: "start", id, chatId }));
+
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        prompt,
+        stream: true,
+      }),
+    });
+    if (!res.ok || !res.body) {
+      const message = await res.text().catch(() => "");
+      throw new Error(`Ollama request failed (${res.status})${message ? `: ${message}` : "."}`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let newline = buffer.indexOf("\n");
+      while (newline !== -1) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (line) {
+          const parsed = JSON.parse(line);
+          if (typeof parsed.error === "string") throw new Error(parsed.error);
+          const responseText = ollamaResponseText(parsed);
+          const images = collectOllamaImages(parsed);
+          if (responseText.length > 0 || images.length > 0) {
+            if (responseText.length > 0) fullText += responseText;
+            if (images.length > 0) generatedImages = mergeOllamaImages(generatedImages, images);
+            socket.send(JSON.stringify({ type: "ollamaChunk", id, text: responseText, images }));
+          }
+          if (parsed.done === true) finalStats = parsed;
+        }
+        newline = buffer.indexOf("\n");
+      }
+    }
+
+    const trailing = buffer.trim();
+    if (trailing) {
+      const parsed = JSON.parse(trailing);
+      if (typeof parsed.error === "string") throw new Error(parsed.error);
+      const responseText = ollamaResponseText(parsed);
+      const images = collectOllamaImages(parsed);
+      if (responseText.length > 0 || images.length > 0) {
+        if (responseText.length > 0) fullText += responseText;
+        if (images.length > 0) generatedImages = mergeOllamaImages(generatedImages, images);
+        socket.send(JSON.stringify({ type: "ollamaChunk", id, text: responseText, images }));
+      }
+      if (parsed.done === true) finalStats = parsed;
+    }
+
+    const extractedFromText = extractOllamaImagesFromText(fullText);
+    if (extractedFromText.images.length > 0) {
+      fullText = extractedFromText.text;
+      generatedImages = mergeOllamaImages(generatedImages, extractedFromText.images);
+    }
+
+    socket.send(JSON.stringify({
+      type: "ollamaDone",
+      id,
+      chatId,
+      modelId: model,
+      text: fullText,
+      images: generatedImages,
+      totalDuration: finalStats.total_duration ?? null,
+      evalCount: finalStats.eval_count ?? null,
+    }));
+
+    if (chatId) {
+      await appendChatMessages(userId, chatId, [{
+        id,
+        role: "user",
+        text: prompt,
+        provider: "ollama",
+        createdAt: userAt,
+      }, {
+        id: `${id}:reply`,
+        role: "assistant",
+        text: fullText,
+        images: generatedImages,
+        provider: "ollama",
+        modelId: model,
+        tokenCount: finalStats.eval_count ?? null,
+        createdAt: new Date(),
+      }]);
+    }
+  } finally {
+    socket.off?.("close", onClose);
+  }
+}
+
 // ─── Fastify ─────────────────────────────────────────────────────────
 const fastify = Fastify({ logger: true });
 await fastify.register(fastifyWebsocket);
@@ -731,6 +1106,10 @@ function rpcListFailedModels() {
   return { failed: stmt.allFailed.all() };
 }
 
+async function rpcListOllamaModels() {
+  return { models: await listOllamaModels(), url: OLLAMA_URL };
+}
+
 async function rpcListChats(_payload, { userId }) {
   if (!chatsCol) throw new Error("Chat storage unavailable.");
   if (typeof userId !== "number") throw new Error("Unauthorized.");
@@ -762,6 +1141,7 @@ async function rpcOpenChat({ chatId }, { userId }) {
       id: m.id,
       role: m.role,
       text: m.text ?? "",
+      provider: m.provider ?? undefined,
       image: m.image ?? undefined,
       images: m.images ?? undefined,
       modelId: m.modelId ?? undefined,
@@ -792,6 +1172,7 @@ async function rpcDeleteMessage({ chatId, messageId }, { userId }) {
 
 const rpcHandlers = {
   listModels:       rpcListModels,
+  listOllamaModels: rpcListOllamaModels,
   listFailedModels: rpcListFailedModels,
   listChats:        rpcListChats,
   openChat:         rpcOpenChat,
@@ -846,6 +1227,20 @@ fastify.register(async (instance) => {
         } catch (err) {
           socket.send(JSON.stringify({
             type: "modelError",
+            error: err instanceof Error ? err.message : String(err),
+          }));
+        }
+        return;
+      }
+
+      // ── ollamaPrompt ──────────────────────────────────────────────
+      if (payload?.type === "ollamaPrompt") {
+        try {
+          await streamOllamaPrompt(socket, payload, session.userId);
+        } catch (err) {
+          socket.send(JSON.stringify({
+            type: "error",
+            id: payload.id ?? undefined,
             error: err instanceof Error ? err.message : String(err),
           }));
         }

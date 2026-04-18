@@ -1,0 +1,87 @@
+<div class="model-selector position-relative">
+  <label class="form-label small text-muted mb-1" for="ollama-model-input">
+    Ollama Model
+    <span
+      *ngIf="chat.ollamaModelsLoading()"
+      class="spinner-border spinner-border-sm ms-1"
+      role="status"
+      aria-hidden="true"
+    ></span>
+  </label>
+
+  <div class="input-group input-group-sm">
+    <input
+      #input
+      id="ollama-model-input"
+      type="text"
+      class="form-control"
+      autocomplete="off"
+      spellcheck="false"
+      [placeholder]="statusLabel()"
+      [value]="query()"
+      (input)="onInput($any($event.target).value)"
+      (focus)="openPanel()"
+      (keydown)="onKey($event)"
+      [disabled]="chat.busy() || !chat.connected()"
+      aria-label="Search Ollama models"
+    />
+    <button
+      type="button"
+      class="btn btn-outline-secondary"
+      title="Use typed Ollama model"
+      (click)="selectTypedModel()"
+      [disabled]="!typedModelId() || chat.busy() || !chat.connected()"
+    >
+      Use
+    </button>
+    <button
+      type="button"
+      class="btn btn-outline-secondary"
+      title="Refresh Ollama model list"
+      (click)="refresh()"
+      [disabled]="chat.ollamaModelsLoading()"
+    >
+      <span
+        *ngIf="chat.ollamaModelsLoading()"
+        class="spinner-border spinner-border-sm"
+        role="status"
+      ></span>
+      <span *ngIf="!chat.ollamaModelsLoading()">R</span>
+    </button>
+  </div>
+
+  <div
+    *ngIf="chat.ollamaModelsError() as err"
+    class="model-error-hint small text-danger mt-1"
+  >
+    {{ err }}
+  </div>
+
+  <div
+    *ngIf="open() && !chat.ollamaModelsLoading()"
+    class="dropdown-panel shadow border rounded bg-white"
+    role="listbox"
+  >
+    <div
+      *ngIf="!chat.ollamaModelsError() && filtered().length === 0"
+      class="p-2 small text-muted"
+    >
+      No local Ollama models. Type a model name or run <code>ollama pull</code>.
+    </div>
+
+    <button
+      type="button"
+      *ngFor="let m of filtered(); let i = index; trackBy: trackById"
+      class="dropdown-item d-flex justify-content-between align-items-center"
+      [class.active]="i === highlighted()"
+      [class.is-current]="m.id === chat.currentOllamaModel()"
+      [title]="m.id"
+      (click)="select(m)"
+      (mouseenter)="highlighted.set(i)"
+      role="option"
+    >
+      <span class="text-truncate me-2">{{ shorten(m.id) }}</span>
+      <small class="text-muted flex-shrink-0">{{ sizeLabel(m.size) }}</small>
+    </button>
+  </div>
+</div>

@@ -1,0 +1,33 @@
+:host {
+  display: inline-block;
+}
+
+.mode-toggle {
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid #cfd7e3;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  background: #f8f9fa;
+}
+
+.mode-button {
+  min-width: 4.2rem;
+  min-height: 2rem;
+  border: 0;
+  background: transparent;
+  color: #394454;
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 0.25rem 0.55rem;
+}
+
+.mode-button.active {
+  background: #0d6efd;
+  color: #ffffff;
+}
+
+.mode-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}

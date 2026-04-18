@@ -1,0 +1,22 @@
+<div class="mode-toggle" role="group" aria-label="Inference mode">
+  <button
+    type="button"
+    class="mode-button"
+    [class.active]="chat.inferenceMode() === 'mlx'"
+    [disabled]="chat.busy()"
+    title="Use local MLX inference"
+    (click)="setMode('mlx')"
+  >
+    MLX
+  </button>
+  <button
+    type="button"
+    class="mode-button"
+    [class.active]="chat.inferenceMode() === 'ollama'"
+    [disabled]="chat.busy()"
+    title="Use Ollama inference"
+    (click)="setMode('ollama')"
+  >
+    Ollama
+  </button>
+</div>

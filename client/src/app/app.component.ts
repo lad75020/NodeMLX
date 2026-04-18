@@ -11,6 +11,8 @@ import { CommonModule } from "@angular/common";
 import { FormsModule } from "@angular/forms";
 import { ChatImageAttachment, ChatMessage, ChatService } from "./chat.service";
 import { ModelSelectorComponent } from "./model-selector.component";
+import { OllamaModelSelectorComponent } from "./ollama-model-selector.component";
+import { InferenceModeToggleComponent } from "./inference-mode-toggle.component";
 import { AuthService } from "./auth.service";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -41,7 +43,13 @@ type FormattedBlock =
 @Component({
   selector: "app-root",
   standalone: true,
-  imports: [CommonModule, FormsModule, ModelSelectorComponent],
+  imports: [
+    CommonModule,
+    FormsModule,
+    ModelSelectorComponent,
+    OllamaModelSelectorComponent,
+    InferenceModeToggleComponent,
+  ],
   templateUrl: "./app.component.html",
   styleUrl: "./app.component.scss",
 })
@@ -61,6 +69,11 @@ export class AppComponent implements OnInit, AfterViewChecked {
 
   private lastImagePresetModel: string | null = null;
   private formattedTextCache = new Map<string, FormattedBlock[]>();
+  private readonly modeEffect = effect(() => {
+    if (this.chat.inferenceMode() === "ollama") {
+      this.clearImage();
+    }
+  });
   private readonly imagePresetEffect = effect(() => {
     const modelId = this.chat.currentModel();
     if (!modelId || !this.chat.supportsImageGeneration()) {
@@ -169,7 +182,8 @@ export class AppComponent implements OnInit, AfterViewChecked {
 
   submit(): void {
     if ((!this.prompt.trim() && !this.selectedImage) || this.chat.busy()) return;
-    const options = this.chat.supportsImageGeneration()
+    const isMlx = this.chat.inferenceMode() === "mlx";
+    const options = isMlx && this.chat.supportsImageGeneration()
       ? {
           imageWidth: this.normalizedImageDimension(this.imageWidth, "width"),
           imageHeight: this.normalizedImageDimension(this.imageHeight, "height"),
@@ -224,6 +238,15 @@ export class AppComponent implements OnInit, AfterViewChecked {
   }
 
   protected canSend(): boolean {
+    if (this.chat.inferenceMode() === "ollama") {
+      return (
+        this.chat.connected() &&
+        !this.chat.busy() &&
+        !!this.chat.currentOllamaModel() &&
+        !!this.prompt.trim()
+      );
+    }
+
     return (
       this.chat.connected() &&
       !this.chat.busy() &&
@@ -236,6 +259,7 @@ export class AppComponent implements OnInit, AfterViewChecked {
 
   protected canAttachImage(): boolean {
     return (
+      this.chat.inferenceMode() === "mlx" &&
       this.chat.connected() &&
       !this.chat.busy() &&
       !this.chat.modelLoading() &&
@@ -245,12 +269,20 @@ export class AppComponent implements OnInit, AfterViewChecked {
   }
 
   protected imageButtonTooltip(): string {
+    if (this.chat.inferenceMode() === "ollama") return "Image input is available in MLX mode";
     if (!this.chat.currentModel()) return "Select a model first";
     if (this.chat.modelLoading())  return "Model is loading…";
     if (!this.chat.supportsVision()) {
       return "Image input is not available for this model in the current backend";
     }
     return "Attach an image";
+  }
+
+  protected promptPlaceholder(): string {
+    if (this.chat.inferenceMode() === "ollama") return "Type a message for Ollama";
+    return this.chat.supportsImageGeneration()
+      ? "Describe an image to generate..."
+      : "Type a message... attach an image for multimodal models";
   }
 
   protected normalizedMaxTokens(): number {
@@ -268,6 +300,7 @@ export class AppComponent implements OnInit, AfterViewChecked {
   }
 
   protected formattedBlocks(message: ChatMessage): FormattedBlock[] {
+    if (message.pending) return this.parseFormattedBlocks(message.text ?? "");
     const key = `${message.id}::${message.text ?? ""}`;
     const cached = this.formattedTextCache.get(key);
     if (cached) return cached;

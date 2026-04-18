@@ -34,8 +34,9 @@
       <header class="chat-header border-bottom bg-white px-3 py-2">
         <div class="d-flex align-items-center gap-3 flex-wrap">
           <h1 class="h5 mb-0 me-auto">NodeMLX Chat</h1>
+          <app-inference-mode-toggle class="order-1 order-md-1"></app-inference-mode-toggle>
           <div
-            *ngIf="chat.currentModel() && !chat.modelLoading()"
+            *ngIf="chat.inferenceMode() === 'mlx' && chat.currentModel() && !chat.modelLoading()"
             class="capability-strip order-2 order-md-1"
             aria-label="Loaded model capabilities"
           >
@@ -73,7 +74,13 @@
               <span>Image generation</span>
             </span>
           </div>
-          <app-model-selector class="order-2 order-md-1"></app-model-selector>
+          <app-model-selector
+            *ngIf="chat.inferenceMode() === 'mlx'; else ollamaSelector"
+            class="order-2 order-md-1"
+          ></app-model-selector>
+          <ng-template #ollamaSelector>
+            <app-ollama-model-selector class="order-2 order-md-1"></app-ollama-model-selector>
+          </ng-template>
           <span
             class="badge rounded-pill order-1 order-md-2"
             [class.text-bg-success]="chat.connected()"
@@ -85,13 +92,15 @@
             Sign Out
           </button>
         </div>
-        <div
-          *ngIf="chat.modelError() as err"
-          class="alert alert-danger py-1 px-2 mb-0 mt-2 small"
-          role="alert"
-        >
-          {{ err }}
-        </div>
+        <ng-container *ngIf="chat.inferenceMode() === 'mlx'">
+          <div
+            *ngIf="chat.modelError() as err"
+            class="alert alert-danger py-1 px-2 mb-0 mt-2 small"
+            role="alert"
+          >
+            {{ err }}
+          </div>
+        </ng-container>
       </header>
 
       <main class="chat-body flex-grow-1 overflow-auto px-3 py-4">
@@ -100,14 +109,20 @@
             class="text-center text-muted py-5"
             *ngIf="chat.messages().length === 0"
           >
-            <ng-container *ngIf="chat.currentModel() && !chat.modelLoading()">
+            <ng-container *ngIf="chat.inferenceMode() === 'ollama' && chat.currentOllamaModel()">
+              Ask Ollama anything to get started.
+            </ng-container>
+            <ng-container *ngIf="chat.inferenceMode() === 'mlx' && chat.currentModel() && !chat.modelLoading()">
               {{ chat.supportsImageGeneration() ? "Describe the image you want to generate." : "Ask the model anything to get started." }}
             </ng-container>
-            <ng-container *ngIf="chat.modelLoading()">
+            <ng-container *ngIf="chat.inferenceMode() === 'mlx' && chat.modelLoading()">
               Loading model… this can take a moment on first run.
             </ng-container>
-            <ng-container *ngIf="!chat.currentModel() && !chat.modelLoading()">
+            <ng-container *ngIf="chat.inferenceMode() === 'mlx' && !chat.currentModel() && !chat.modelLoading()">
               Pick an <code>mlx-community</code> model above to begin.
+            </ng-container>
+            <ng-container *ngIf="chat.inferenceMode() === 'ollama' && !chat.currentOllamaModel()">
+              Pick an Ollama model above to begin.
             </ng-container>
           </div>
 
@@ -135,7 +150,7 @@
                 [alt]="msg.image.name"
               />
               <div
-                *ngIf="!msg.pending && msg.images?.length"
+                *ngIf="msg.images?.length"
                 class="generated-images"
               >
                 <img
@@ -145,7 +160,7 @@
                   [alt]="image.name"
                 />
               </div>
-              <div *ngIf="!msg.pending && msg.text" class="bubble-text">
+              <div *ngIf="msg.text" class="bubble-text">
                 <ng-container *ngIf="msg.role === 'assistant'; else plainBubbleText">
                   <ng-container *ngFor="let block of formattedBlocks(msg)">
                     <div *ngIf="block.kind === 'chapter'" class="bubble-chapter">
@@ -256,13 +271,13 @@
           </div>
           <div *ngIf="imageError" class="text-danger small mb-2">{{ imageError }}</div>
           <div
-            *ngIf="selectedImage && !chat.supportsVision() && chat.currentModel()"
+            *ngIf="selectedImage && chat.inferenceMode() === 'mlx' && !chat.supportsVision() && chat.currentModel()"
             class="text-warning small mb-2"
           >
             Image input is not available for this model in the current backend.
           </div>
           <div
-            *ngIf="chat.supportsImageGeneration(); else textGenerationControls"
+            *ngIf="chat.inferenceMode() === 'mlx' && chat.supportsImageGeneration(); else textGenerationControls"
             class="image-generation-controls mb-2"
           >
             <label class="image-control">
@@ -329,7 +344,7 @@
             </button>
           </div>
           <ng-template #textGenerationControls>
-            <div class="generation-controls mb-2">
+            <div *ngIf="chat.inferenceMode() === 'mlx'" class="generation-controls mb-2">
               <label class="form-label small text-muted mb-0" for="maxTokens">
                 Max tokens
               </label>
@@ -371,11 +386,11 @@
             <textarea
               class="form-control"
               rows="2"
-              [placeholder]="chat.supportsImageGeneration() ? 'Describe an image to generate…' : 'Type a message… attach an image for multimodal models'"
+              [placeholder]="promptPlaceholder()"
               [(ngModel)]="prompt"
               name="prompt"
               (keydown)="onKeydown($event)"
-              [disabled]="!chat.connected() || chat.busy() || chat.modelLoading() || !chat.currentModel()"
+              [disabled]="!chat.connected() || chat.busy() || (chat.inferenceMode() === 'mlx' && (chat.modelLoading() || !chat.currentModel())) || (chat.inferenceMode() === 'ollama' && !chat.currentOllamaModel())"
               aria-label="Prompt"
             ></textarea>
             <button

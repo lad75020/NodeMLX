@@ -1,11 +1,13 @@
 import { Injectable, signal, computed } from "@angular/core";
 
 export type Role = "user" | "assistant";
+export type InferenceMode = "mlx" | "ollama";
 
 export interface ChatMessage {
   id: string;
   role: Role;
   text: string;
+  provider?: InferenceMode;
   image?: ChatImageAttachment;
   images?: ChatImageAttachment[];
   pending?: boolean;
@@ -44,6 +46,15 @@ export interface FailedModel {
   failedAt: string;
 }
 
+export interface OllamaModel {
+  id: string;
+  name: string;
+  modifiedAt: string | null;
+  size: number;
+  digest: string | null;
+  details: Record<string, unknown> | null;
+}
+
 export interface ChatSummary {
   id: string;
   startedAt: string;
@@ -54,6 +65,8 @@ type ServerEvent =
   | { type: "start"; id: string; chatId?: string | null }
   | { type: "chatCreated"; id: string; chat: ChatSummary }
   | { type: "response"; id: string; chatId?: string | null; modelId?: string; text: string; images?: ChatImageAttachment[]; tokenCount: number; tokensPerSecond: number }
+  | { type: "ollamaChunk"; id: string; text?: string; images?: ChatImageAttachment[] }
+  | { type: "ollamaDone"; id: string; chatId?: string | null; modelId: string; text: string; images?: ChatImageAttachment[]; totalDuration?: number | null; evalCount?: number | null }
   | { type: "error"; id?: string; error: string }
   | { type: "modelLoading"; modelId: string | null }
   | { type: "modelReady";   modelId: string; isVLM?: boolean; canGenerateImages?: boolean }
@@ -65,6 +78,7 @@ export class ChatService {
   readonly messages      = signal<ChatMessage[]>([]);
   readonly connected     = signal(false);
   readonly busy          = signal(false);
+  readonly inferenceMode = signal<InferenceMode>("mlx");
   readonly currentModel  = signal<string | null>(null);
   readonly pendingModel  = signal<string | null>(null);
   readonly modelLoading  = signal(false);
@@ -77,6 +91,12 @@ export class ChatService {
   readonly modelsError     = signal<string | null>(null);
 
   readonly failedModels = signal<Map<string, string>>(new Map());
+
+  readonly ollamaModels        = signal<OllamaModel[]>([]);
+  readonly ollamaModelsLoading = signal(false);
+  readonly ollamaModelsError   = signal<string | null>(null);
+  readonly currentOllamaModel  = signal<string | null>(null);
+  readonly ollamaUrl           = signal<string | null>(null);
 
   readonly chats         = signal<ChatSummary[]>([]);
   readonly currentChatId = signal<string | null>(null);
@@ -206,7 +226,18 @@ export class ChatService {
     try {
       const body = await this.rpc<{ id: string; messages: ChatMessage[] }>("openChat", { chatId: id });
       this.currentChatId.set(body.id);
-      this.messages.set((body.messages ?? []).map((m) => ({ ...m, pending: false })));
+      this.messages.set((body.messages ?? []).map((m) => {
+        if (m.role === "assistant" && m.provider === "ollama") {
+          const extracted = this.extractOllamaImages(m.text ?? "");
+          return {
+            ...m,
+            text: extracted.text,
+            images: [...(m.images ?? []), ...extracted.images],
+            pending: false,
+          };
+        }
+        return { ...m, pending: false };
+      }));
       this.busy.set(false);
     } catch {}
   }
@@ -237,7 +268,34 @@ export class ChatService {
     } catch {}
   }
 
+  async loadOllamaModels(): Promise<void> {
+    this.ollamaModelsLoading.set(true);
+    this.ollamaModelsError.set(null);
+    try {
+      const body = await this.rpc<{ models: OllamaModel[]; url?: string }>("listOllamaModels");
+      const models = body.models ?? [];
+      this.ollamaModels.set(models);
+      this.ollamaUrl.set(body.url ?? null);
+      if (!this.currentOllamaModel() && models.length > 0) {
+        this.currentOllamaModel.set(models[0].id);
+      }
+    } catch (err) {
+      this.ollamaModels.set([]);
+      this.ollamaModelsError.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.ollamaModelsLoading.set(false);
+    }
+  }
+
   // ── WS commands (fire-and-forget, existing events) ────────────────
+  setInferenceMode(mode: InferenceMode): void {
+    if (this.inferenceMode() === mode) return;
+    this.inferenceMode.set(mode);
+    if (mode === "ollama" && this.ollamaModels().length === 0) {
+      void this.loadOllamaModels();
+    }
+  }
+
   selectModel(modelId: string): void {
     const id = modelId.trim();
     if (!id || this.modelLoading()) return;
@@ -248,7 +306,22 @@ export class ChatService {
     this.sendWs({ type: "selectModel", modelId: id });
   }
 
+  selectOllamaModel(modelId: string): void {
+    const id = modelId.trim();
+    if (!id) return;
+    this.currentOllamaModel.set(id);
+    this.ollamaModels.update((models) => {
+      if (models.some((m) => m.id === id)) return models;
+      return [{ id, name: id, modifiedAt: null, size: 0, digest: null, details: null }, ...models];
+    });
+  }
+
   send(prompt: string, image?: ChatImageAttachment, options: ChatGenerationOptions = {}): void {
+    if (this.inferenceMode() === "ollama") {
+      this.sendOllama(prompt);
+      return;
+    }
+
     const text = prompt.trim() || (image ? "Describe this image." : "");
     if ((!text && !image) || this.busy() || this.modelLoading() || !this.currentModel()) return;
 
@@ -270,6 +343,27 @@ export class ChatService {
       imageHeight: options.imageHeight,
       steps: options.steps,
       seed: options.seed,
+    });
+  }
+
+  private sendOllama(prompt: string): void {
+    const text = prompt.trim();
+    const modelId = this.currentOllamaModel();
+    if (!text || this.busy() || !modelId) return;
+
+    const id = crypto.randomUUID();
+    this.messages.update((list) => [
+      ...list,
+      { id, role: "user", text, provider: "ollama" },
+      { id: `${id}:reply`, role: "assistant", text: "", pending: true, modelId, provider: "ollama" },
+    ]);
+    this.busy.set(true);
+    this.sendWs({
+      type: "ollamaPrompt",
+      id,
+      chatId: this.currentChatId(),
+      modelId,
+      prompt: text,
     });
   }
 
@@ -301,6 +395,48 @@ export class ChatService {
               ? { ...msg, text: event.text, images: event.images ?? [], pending: false,
                   tokenCount: event.tokenCount, tokensPerSecond: event.tokensPerSecond,
                   modelId: event.modelId }
+              : msg
+          )
+        );
+        this.busy.set(false);
+        {
+          const cid = this.currentChatId();
+          if (cid) {
+            const current = this.chats().find((c) => c.id === cid);
+            if (!current || current.title === null) void this.loadChats();
+          }
+        }
+        return;
+
+      case "ollamaChunk":
+        this.messages.update((list) =>
+          list.map((msg) =>
+            msg.id === `${event.id}:reply`
+              ? this.withExtractedOllamaImages({
+                  ...msg,
+                  text: `${msg.text ?? ""}${event.text ?? ""}`,
+                  images: this.mergeImages(msg.images ?? [], event.images ?? []),
+                  pending: true,
+                  provider: "ollama",
+                })
+              : msg
+          )
+        );
+        return;
+
+      case "ollamaDone":
+        this.messages.update((list) =>
+          list.map((msg) =>
+            msg.id === `${event.id}:reply`
+              ? this.withExtractedOllamaImages({
+                  ...msg,
+                  text: event.text,
+                  images: this.mergeImages(msg.images ?? [], event.images ?? []),
+                  pending: false,
+                  provider: "ollama",
+                  modelId: event.modelId,
+                  tokenCount: event.evalCount ?? undefined,
+                })
               : msg
           )
         );
@@ -363,6 +499,101 @@ export class ChatService {
     this.failedModels.set(map);
   }
 
+  private withExtractedOllamaImages(message: ChatMessage): ChatMessage {
+    const extracted = this.extractOllamaImages(message.text ?? "");
+    const images = this.mergeImages(message.images ?? [], extracted.images);
+    return {
+      ...message,
+      text: extracted.text,
+      images: images.length > 0 ? images : undefined,
+    };
+  }
+
+  private extractOllamaImages(text: string): { text: string; images: ChatImageAttachment[] } {
+    const images: ChatImageAttachment[] = [];
+    let cleaned = text;
+
+    cleaned = cleaned.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g, (match, alt, src) => {
+      this.addDetectedImage(images, src, alt || undefined);
+      return "";
+    });
+
+    cleaned = cleaned.replace(/<img\b[^>]*>/gi, (match) => {
+      const src = /\bsrc=["']([^"']+)["']/i.exec(match)?.[1];
+      const alt = /\balt=["']([^"']*)["']/i.exec(match)?.[1];
+      if (!src) return match;
+      this.addDetectedImage(images, src, alt || undefined);
+      return "";
+    });
+
+    cleaned = cleaned.replace(/data:image\/(?:png|jpeg|jpg|gif|webp|svg\+xml);base64,[A-Za-z0-9+/=]+/gi, (src) => {
+      this.addDetectedImage(images, src);
+      return "";
+    });
+
+    cleaned = cleaned.replace(/https?:\/\/[^\s<>"')]+\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s<>"')]*)?/gi, (src) => {
+      this.addDetectedImage(images, src);
+      return "";
+    });
+
+    return {
+      text: cleaned.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim(),
+      images,
+    };
+  }
+
+  private addDetectedImage(images: ChatImageAttachment[], rawSrc: string, alt?: string): void {
+    const src = rawSrc.trim().replace(/^<|>$/g, "");
+    if (!this.isDisplayableImageSource(src)) return;
+    if (images.some((image) => image.dataUrl === src)) return;
+
+    images.push({
+      dataUrl: src,
+      name: alt?.trim() || this.imageNameFromSource(src),
+      type: this.imageTypeFromSource(src),
+      size: 0,
+    });
+  }
+
+  private mergeImages(
+    existing: ChatImageAttachment[],
+    detected: ChatImageAttachment[]
+  ): ChatImageAttachment[] {
+    const bySource = new Map<string, ChatImageAttachment>();
+    for (const image of [...existing, ...detected]) {
+      if (!bySource.has(image.dataUrl)) bySource.set(image.dataUrl, image);
+    }
+    return [...bySource.values()];
+  }
+
+  private isDisplayableImageSource(src: string): boolean {
+    return /^data:image\//i.test(src) || /^https?:\/\//i.test(src);
+  }
+
+  private imageNameFromSource(src: string): string {
+    if (/^data:image\//i.test(src)) return "Ollama image";
+    try {
+      const url = new URL(src);
+      const filename = url.pathname.split("/").filter(Boolean).pop();
+      return filename ? decodeURIComponent(filename) : "Ollama image";
+    } catch {
+      return "Ollama image";
+    }
+  }
+
+  private imageTypeFromSource(src: string): string {
+    const dataMatch = /^data:(image\/[^;]+);/i.exec(src);
+    if (dataMatch) return dataMatch[1];
+
+    const clean = src.split("?")[0].toLowerCase();
+    if (clean.endsWith(".jpg") || clean.endsWith(".jpeg")) return "image/jpeg";
+    if (clean.endsWith(".png")) return "image/png";
+    if (clean.endsWith(".gif")) return "image/gif";
+    if (clean.endsWith(".webp")) return "image/webp";
+    if (clean.endsWith(".svg")) return "image/svg+xml";
+    return "image";
+  }
+
   private resetState(): void {
     this.messages.set([]);
     this.currentChatId.set(null);
@@ -378,6 +609,12 @@ export class ChatService {
     this.modelsLoading.set(false);
     this.modelsError.set(null);
     this.failedModels.set(new Map());
+    this.inferenceMode.set("mlx");
+    this.ollamaModels.set([]);
+    this.ollamaModelsLoading.set(false);
+    this.ollamaModelsError.set(null);
+    this.currentOllamaModel.set(null);
+    this.ollamaUrl.set(null);
   }
 
   private scheduleReconnect(): void {
