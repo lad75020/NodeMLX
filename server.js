@@ -405,6 +405,36 @@ function cleanupPromptImage(imagePath) {
   void rm(imagePath, { force: true }).catch(() => {});
 }
 
+function promptImageForOllama(image) {
+  if (!image) return null;
+  if (typeof image !== "object" || typeof image.dataUrl !== "string") {
+    throw new Error("Invalid image payload.");
+  }
+
+  const match = /^data:(image\/(?:jpeg|png|webp|gif));base64,([A-Za-z0-9+/=]+)$/.exec(image.dataUrl);
+  if (!match) {
+    throw new Error("Image must be a JPEG, PNG, WebP, or GIF data URL.");
+  }
+
+  const buffer = Buffer.from(match[2], "base64");
+  if (buffer.byteLength === 0) {
+    throw new Error("Image is empty.");
+  }
+  if (buffer.byteLength > MAX_IMAGE_BYTES) {
+    throw new Error("Image is too large. Maximum size is 10 MB.");
+  }
+
+  return {
+    base64: match[2],
+    attachment: {
+      dataUrl: image.dataUrl,
+      name: typeof image.name === "string" ? image.name.slice(0, 200) : "image",
+      type: match[1],
+      size: buffer.byteLength,
+    },
+  };
+}
+
 // ─── ModelProcess — owns the child process lifecycle ─────────────────
 class ModelProcess {
   #worker = null;
@@ -978,8 +1008,9 @@ async function streamOllamaPrompt(socket, payload, userId) {
   const id = payload.id ?? String(Date.now());
   const model = typeof payload.modelId === "string" ? payload.modelId.trim() : "";
   const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
+  const image = promptImageForOllama(payload.image);
   if (!model) throw new Error("Ollama model required.");
-  if (!prompt) throw new Error("Prompt required.");
+  if (!prompt && !image) throw new Error("Prompt required.");
 
   const { chatId, created } = await ensureUserChat(
     userId,
@@ -1000,15 +1031,24 @@ async function streamOllamaPrompt(socket, payload, userId) {
   socket.send(JSON.stringify({ type: "start", id, chatId }));
 
   try {
+    const requestBody = {
+      model,
+      prompt,
+      stream: true,
+    };
+    if (image) {
+      requestBody.images = [image.base64];
+    }
+    const seed = optionalClampedInteger(payload.seed, 0, 2 ** 31 - 1);
+    if (typeof seed === "number") {
+      requestBody.options = { seed };
+    }
+
     const res = await fetch(`${OLLAMA_URL}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal: controller.signal,
-      body: JSON.stringify({
-        model,
-        prompt,
-        stream: true,
-      }),
+      body: JSON.stringify(requestBody),
     });
     if (!res.ok || !res.body) {
       const message = await res.text().catch(() => "");
@@ -1080,6 +1120,7 @@ async function streamOllamaPrompt(socket, payload, userId) {
         id,
         role: "user",
         text: prompt,
+        image: image?.attachment ?? null,
         provider: "ollama",
         createdAt: userAt,
       }, {

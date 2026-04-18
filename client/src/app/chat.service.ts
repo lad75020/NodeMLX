@@ -364,7 +364,7 @@ export class ChatService {
 
   send(prompt: string, image?: ChatImageAttachment, options: ChatGenerationOptions = {}): void {
     if (this.inferenceMode() === "ollama") {
-      this.sendOllama(prompt);
+      this.sendOllama(prompt, image, options);
       return;
     }
 
@@ -392,15 +392,22 @@ export class ChatService {
     });
   }
 
-  private sendOllama(prompt: string): void {
-    const text = prompt.trim();
+  private sendOllama(
+    prompt: string,
+    image?: ChatImageAttachment,
+    options: ChatGenerationOptions = {}
+  ): void {
+    const text = prompt.trim() || (image ? "Describe this image." : "");
     const modelId = this.currentOllamaModel();
-    if (!text || this.busy() || !modelId) return;
+    const supportsVision = this.ollamaCapabilities().some(
+      (capability) => capability.replace(/[-_\s]+/g, "").toLowerCase() === "vision"
+    );
+    if ((!text && !image) || this.busy() || !modelId || (image && !supportsVision)) return;
 
     const id = crypto.randomUUID();
     this.messages.update((list) => [
       ...list,
-      { id, role: "user", text, provider: "ollama" },
+      { id, role: "user", text, image, provider: "ollama" },
       { id: `${id}:reply`, role: "assistant", text: "", pending: true, modelId, provider: "ollama" },
     ]);
     this.busy.set(true);
@@ -410,6 +417,11 @@ export class ChatService {
       chatId: this.currentChatId(),
       modelId,
       prompt: text,
+      image,
+      imageWidth: options.imageWidth,
+      imageHeight: options.imageHeight,
+      steps: options.steps,
+      seed: options.seed,
     });
   }
 

@@ -2,6 +2,18 @@
   <div class="app-layout">
     <aside class="chat-sidebar">
       <div class="sidebar-header">
+        <div class="sidebar-account">
+          <span
+            class="badge rounded-pill"
+            [class.text-bg-success]="chat.connected()"
+            [class.text-bg-secondary]="!chat.connected()"
+          >
+            {{ chat.connected() ? "Connected" : "Disconnected" }}
+          </span>
+          <button type="button" class="btn btn-outline-secondary btn-sm" (click)="logout()">
+            Sign Out
+          </button>
+        </div>
         <button type="button" class="btn btn-primary btn-sm w-100" (click)="onNewChat()">+ New Chat</button>
       </div>
       <div class="sidebar-list">
@@ -117,16 +129,6 @@
           <ng-template #ollamaSelector>
             <app-ollama-model-selector class="order-2 order-md-1"></app-ollama-model-selector>
           </ng-template>
-          <span
-            class="badge rounded-pill order-1 order-md-2"
-            [class.text-bg-success]="chat.connected()"
-            [class.text-bg-secondary]="!chat.connected()"
-          >
-            {{ chat.connected() ? "Connected" : "Disconnected" }}
-          </span>
-          <button type="button" class="btn btn-outline-secondary btn-sm order-1 order-md-2" (click)="logout()">
-            Sign Out
-          </button>
         </div>
         <ng-container *ngIf="chat.inferenceMode() === 'mlx'">
           <div
@@ -307,13 +309,13 @@
           </div>
           <div *ngIf="imageError" class="text-danger small mb-2">{{ imageError }}</div>
           <div
-            *ngIf="selectedImage && chat.inferenceMode() === 'mlx' && !chat.supportsVision() && chat.currentModel()"
+            *ngIf="selectedImage && ((chat.inferenceMode() === 'mlx' && !chat.supportsVision() && chat.currentModel()) || (chat.inferenceMode() === 'ollama' && !hasOllamaCapability('vision') && chat.currentOllamaModel()))"
             class="text-warning small mb-2"
           >
             Image input is not available for this model in the current backend.
           </div>
           <div
-            *ngIf="chat.inferenceMode() === 'mlx' && chat.supportsImageGeneration(); else textGenerationControls"
+            *ngIf="usesImageGenerationControls(); else textGenerationControls"
             class="image-generation-controls mb-2"
           >
             <label class="image-control">
@@ -326,7 +328,7 @@
                 step="8"
                 [(ngModel)]="imageWidth"
                 name="imageWidth"
-                [disabled]="!chat.connected() || chat.busy() || chat.modelLoading() || !chat.currentModel()"
+                [disabled]="!canEditImageSettings()"
               />
             </label>
             <label class="image-control">
@@ -339,7 +341,7 @@
                 step="8"
                 [(ngModel)]="imageHeight"
                 name="imageHeight"
-                [disabled]="!chat.connected() || chat.busy() || chat.modelLoading() || !chat.currentModel()"
+                [disabled]="!canEditImageSettings()"
               />
             </label>
             <label class="image-control image-control-narrow">
@@ -352,7 +354,7 @@
                 step="1"
                 [(ngModel)]="imageSteps"
                 name="imageSteps"
-                [disabled]="!chat.connected() || chat.busy() || chat.modelLoading() || !chat.currentModel()"
+                [disabled]="!canEditImageSettings()"
               />
             </label>
             <label class="image-control">
@@ -366,7 +368,7 @@
                 placeholder="Random"
                 [(ngModel)]="imageSeed"
                 name="imageSeed"
-                [disabled]="!chat.connected() || chat.busy() || chat.modelLoading() || !chat.currentModel()"
+                [disabled]="!canEditImageSettings()"
               />
             </label>
             <button
@@ -374,7 +376,7 @@
               class="btn btn-sm btn-outline-secondary image-preset-button"
               title="Reset image settings to this model's preset"
               (click)="resetImagePreset()"
-              [disabled]="!chat.connected() || chat.busy() || chat.modelLoading() || !chat.currentModel()"
+              [disabled]="!canEditImageSettings()"
             >
               Preset
             </button>
@@ -410,8 +412,8 @@
             <button
               type="button"
               class="btn btn-outline-secondary"
-              [class.btn-outline-secondary]="chat.supportsVision()"
-              [class.btn-outline-light]="!chat.supportsVision()"
+              [class.btn-outline-secondary]="canAttachImage()"
+              [class.btn-outline-light]="!canAttachImage()"
               (click)="imageInput.click()"
               [disabled]="!canAttachImage()"
               aria-label="Attach image"

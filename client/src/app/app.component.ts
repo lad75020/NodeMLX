@@ -70,13 +70,18 @@ export class AppComponent implements OnInit, AfterViewChecked {
   private lastImagePresetModel: string | null = null;
   private formattedTextCache = new Map<string, FormattedBlock[]>();
   private readonly modeEffect = effect(() => {
-    if (this.chat.inferenceMode() === "ollama") {
+    const canUseImage = this.chat.inferenceMode() === "mlx"
+      ? this.chat.supportsVision()
+      : this.chat.ollamaCapabilitiesLoading() || this.hasOllamaCapability("vision");
+    if (this.selectedImage && !canUseImage) {
       this.clearImage();
     }
   });
   private readonly imagePresetEffect = effect(() => {
-    const modelId = this.chat.currentModel();
-    if (!modelId || !this.chat.supportsImageGeneration()) {
+    const modelId = this.chat.inferenceMode() === "mlx"
+      ? this.chat.currentModel()
+      : this.chat.currentOllamaModel();
+    if (!modelId || !this.usesImageGenerationControls()) {
       this.lastImagePresetModel = null;
       return;
     }
@@ -182,8 +187,7 @@ export class AppComponent implements OnInit, AfterViewChecked {
 
   submit(): void {
     if ((!this.prompt.trim() && !this.selectedImage) || this.chat.busy()) return;
-    const isMlx = this.chat.inferenceMode() === "mlx";
-    const options = isMlx && this.chat.supportsImageGeneration()
+    const options = this.usesImageGenerationControls()
       ? {
           imageWidth: this.normalizedImageDimension(this.imageWidth, "width"),
           imageHeight: this.normalizedImageDimension(this.imageHeight, "height"),
@@ -243,7 +247,8 @@ export class AppComponent implements OnInit, AfterViewChecked {
         this.chat.connected() &&
         !this.chat.busy() &&
         !!this.chat.currentOllamaModel() &&
-        !!this.prompt.trim()
+        (!this.selectedImage || this.hasOllamaCapability("vision")) &&
+        (!!this.prompt.trim() || !!this.selectedImage)
       );
     }
 
@@ -258,18 +263,21 @@ export class AppComponent implements OnInit, AfterViewChecked {
   }
 
   protected canAttachImage(): boolean {
-    return (
-      this.chat.inferenceMode() === "mlx" &&
-      this.chat.connected() &&
-      !this.chat.busy() &&
-      !this.chat.modelLoading() &&
-      !!this.chat.currentModel() &&
-      this.chat.supportsVision()
-    );
+    if (!this.chat.connected() || this.chat.busy()) return false;
+    if (this.chat.inferenceMode() === "ollama") {
+      return !!this.chat.currentOllamaModel() && this.hasOllamaCapability("vision");
+    }
+
+    return !this.chat.modelLoading() && !!this.chat.currentModel() && this.chat.supportsVision();
   }
 
   protected imageButtonTooltip(): string {
-    if (this.chat.inferenceMode() === "ollama") return "Image input is available in MLX mode";
+    if (this.chat.inferenceMode() === "ollama") {
+      if (!this.chat.currentOllamaModel()) return "Select an Ollama model first";
+      if (this.chat.ollamaCapabilitiesLoading()) return "Model capabilities are loading…";
+      if (!this.hasOllamaCapability("vision")) return "Image input is not available for this Ollama model";
+      return "Attach an image";
+    }
     if (!this.chat.currentModel()) return "Select a model first";
     if (this.chat.modelLoading())  return "Model is loading…";
     if (!this.chat.supportsVision()) {
@@ -278,8 +286,32 @@ export class AppComponent implements OnInit, AfterViewChecked {
     return "Attach an image";
   }
 
+  protected usesImageGenerationControls(): boolean {
+    return this.chat.inferenceMode() === "mlx"
+      ? this.chat.supportsImageGeneration()
+      : this.hasOllamaCapability("image") || this.hasOllamaCapability("imagegeneration");
+  }
+
+  protected canEditImageSettings(): boolean {
+    if (!this.chat.connected() || this.chat.busy()) return false;
+    if (this.chat.inferenceMode() === "ollama") {
+      return !!this.chat.currentOllamaModel() && this.usesImageGenerationControls();
+    }
+    return !this.chat.modelLoading() && !!this.chat.currentModel() && this.chat.supportsImageGeneration();
+  }
+
+  protected hasOllamaCapability(capability: string): boolean {
+    const target = this.normalizedCapability(capability);
+    return this.chat.ollamaCapabilities().some((value) => this.normalizedCapability(value) === target);
+  }
+
   protected promptPlaceholder(): string {
-    if (this.chat.inferenceMode() === "ollama") return "Type a message for Ollama";
+    if (this.chat.inferenceMode() === "ollama") {
+      if (this.usesImageGenerationControls()) return "Describe the image you want to generate with Ollama";
+      return this.hasOllamaCapability("vision")
+        ? "Type a message... attach an image for vision models"
+        : "Type a message for Ollama";
+    }
     return this.chat.supportsImageGeneration()
       ? "Describe an image to generate..."
       : "Type a message... attach an image for multimodal models";
@@ -291,7 +323,7 @@ export class AppComponent implements OnInit, AfterViewChecked {
         ? `queue · position ${message.queuePosition}`
         : "queue";
     }
-    return this.chat.supportsImageGeneration() && message.role === "assistant"
+    return this.usesImageGenerationControls() && message.role === "assistant"
       ? "generating…"
       : "thinking…";
   }
@@ -300,6 +332,10 @@ export class AppComponent implements OnInit, AfterViewChecked {
     const normalized = capability.replace(/[-_]+/g, " ").trim();
     if (!normalized) return capability;
     return normalized[0].toUpperCase() + normalized.slice(1);
+  }
+
+  private normalizedCapability(capability: string): string {
+    return capability.replace(/[-_\s]+/g, "").trim().toLowerCase();
   }
 
   protected normalizedMaxTokens(): number {
@@ -311,7 +347,9 @@ export class AppComponent implements OnInit, AfterViewChecked {
   }
 
   protected resetImagePreset(): void {
-    const modelId = this.chat.currentModel();
+    const modelId = this.chat.inferenceMode() === "mlx"
+      ? this.chat.currentModel()
+      : this.chat.currentOllamaModel();
     if (!modelId) return;
     this.applyImagePreset(modelId);
   }
