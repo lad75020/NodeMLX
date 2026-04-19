@@ -198,6 +198,13 @@
                   [alt]="image.name"
                 />
               </div>
+              <div
+                *ngIf="msg.role === 'assistant' && msg.thinking"
+                class="thinking-bubble"
+              >
+                <div class="thinking-label">Thinking</div>
+                <div class="thinking-text">{{ msg.thinking }}</div>
+              </div>
               <div *ngIf="msg.text" class="bubble-text">
                 <ng-container *ngIf="msg.role === 'assistant'; else plainBubbleText">
                   <ng-container *ngFor="let block of formattedBlocks(msg)">

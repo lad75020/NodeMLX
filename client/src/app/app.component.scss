@@ -326,6 +326,33 @@
   white-space: pre-wrap;
 }
 
+.thinking-bubble {
+  display: grid;
+  gap: 0.25rem;
+  margin-bottom: 0.55rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--app-thinking-border);
+  border-radius: 0.85rem;
+  background: var(--app-thinking-bg);
+  color: var(--app-thinking-text);
+  white-space: normal;
+}
+
+.thinking-label {
+  color: var(--app-thinking-label);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.thinking-text {
+  font-size: 0.88rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
 .bubble-chapter {
   font-size: 1.02rem;
   font-weight: 700;

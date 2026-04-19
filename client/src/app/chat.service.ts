@@ -7,6 +7,7 @@ export interface ChatMessage {
   id: string;
   role: Role;
   text: string;
+  thinking?: string;
   provider?: InferenceMode;
   image?: ChatImageAttachment;
   images?: ChatImageAttachment[];
@@ -75,8 +76,8 @@ type ServerEvent =
   | { type: "queued"; id: string; position: number }
   | { type: "chatCreated"; id: string; chat: ChatSummary }
   | { type: "response"; id: string; chatId?: string | null; modelId?: string; text: string; images?: ChatImageAttachment[]; tokenCount: number; tokensPerSecond: number }
-  | { type: "ollamaChunk"; id: string; text?: string; images?: ChatImageAttachment[] }
-  | { type: "ollamaDone"; id: string; chatId?: string | null; modelId: string; text: string; images?: ChatImageAttachment[]; totalDuration?: number | null; evalCount?: number | null }
+  | { type: "ollamaChunk"; id: string; text?: string; thinking?: string; images?: ChatImageAttachment[] }
+  | { type: "ollamaDone"; id: string; chatId?: string | null; modelId: string; text: string; thinking?: string; images?: ChatImageAttachment[]; totalDuration?: number | null; evalCount?: number | null }
   | { type: "error"; id?: string; error: string }
   | { type: "modelLoading"; modelId: string | null }
   | { type: "modelReady";   modelId: string; isVLM?: boolean; canGenerateImages?: boolean }
@@ -402,6 +403,9 @@ export class ChatService {
     const supportsVision = this.ollamaCapabilities().some(
       (capability) => capability.replace(/[-_\s]+/g, "").toLowerCase() === "vision"
     );
+    const supportsThinking = this.ollamaCapabilities().some(
+      (capability) => capability.replace(/[-_\s]+/g, "").toLowerCase() === "thinking"
+    );
     if ((!text && !image) || this.busy() || !modelId || (image && !supportsVision)) return;
 
     const id = crypto.randomUUID();
@@ -422,6 +426,7 @@ export class ChatService {
       imageHeight: options.imageHeight,
       steps: options.steps,
       seed: options.seed,
+      enableThinking: supportsThinking,
     });
   }
 
@@ -491,6 +496,7 @@ export class ChatService {
               ? this.withExtractedOllamaImages({
                   ...msg,
                   text: `${msg.text ?? ""}${event.text ?? ""}`,
+                  thinking: `${msg.thinking ?? ""}${event.thinking ?? ""}` || undefined,
                   images: this.mergeImages(msg.images ?? [], event.images ?? []),
                   pending: true,
                   queued: false,
@@ -509,6 +515,7 @@ export class ChatService {
               ? this.withExtractedOllamaImages({
                   ...msg,
                   text: event.text,
+                  thinking: event.thinking ?? msg.thinking,
                   images: this.mergeImages(msg.images ?? [], event.images ?? []),
                   pending: false,
                   queued: false,

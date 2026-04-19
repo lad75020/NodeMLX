@@ -982,6 +982,35 @@ function ollamaResponseText(parsed) {
   return "";
 }
 
+function ollamaResponseThinking(parsed) {
+  if (typeof parsed?.thinking === "string") return parsed.thinking;
+  if (typeof parsed?.message?.thinking === "string") return parsed.message.thinking;
+  return "";
+}
+
+function ollamaThinkValue(model) {
+  return /\bgpt-oss\b/i.test(model) ? "medium" : true;
+}
+
+async function unloadOllamaModel(model) {
+  const id = typeof model === "string" ? model.trim() : "";
+  if (!id) return;
+
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: id, keep_alive: 0 }),
+    });
+    if (!res.ok) {
+      const message = await res.text().catch(() => "");
+      console.warn(`Ollama unload failed (${res.status})${message ? `: ${message}` : "."}`);
+    }
+  } catch (err) {
+    console.warn(`Ollama unload failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 function extractOllamaImagesFromText(text) {
   const trimmed = text.trim();
   if (!trimmed) return { text, images: [] };
@@ -1026,8 +1055,10 @@ async function streamOllamaPrompt(socket, payload, userId) {
 
   const userAt = new Date();
   let fullText = "";
+  let fullThinking = "";
   let generatedImages = [];
   let finalStats = {};
+  let responseCompleted = false;
   socket.send(JSON.stringify({ type: "start", id, chatId }));
 
   try {
@@ -1036,6 +1067,9 @@ async function streamOllamaPrompt(socket, payload, userId) {
       prompt,
       stream: true,
     };
+    if (payload.enableThinking === true) {
+      requestBody.think = ollamaThinkValue(model);
+    }
     if (image) {
       requestBody.images = [image.base64];
     }
@@ -1072,11 +1106,13 @@ async function streamOllamaPrompt(socket, payload, userId) {
           const parsed = JSON.parse(line);
           if (typeof parsed.error === "string") throw new Error(parsed.error);
           const responseText = ollamaResponseText(parsed);
+          const thinkingText = ollamaResponseThinking(parsed);
           const images = collectOllamaImages(parsed);
-          if (responseText.length > 0 || images.length > 0) {
+          if (responseText.length > 0 || thinkingText.length > 0 || images.length > 0) {
             if (responseText.length > 0) fullText += responseText;
+            if (thinkingText.length > 0) fullThinking += thinkingText;
             if (images.length > 0) generatedImages = mergeOllamaImages(generatedImages, images);
-            socket.send(JSON.stringify({ type: "ollamaChunk", id, text: responseText, images }));
+            socket.send(JSON.stringify({ type: "ollamaChunk", id, text: responseText, thinking: thinkingText, images }));
           }
           if (parsed.done === true) finalStats = parsed;
         }
@@ -1089,11 +1125,13 @@ async function streamOllamaPrompt(socket, payload, userId) {
       const parsed = JSON.parse(trailing);
       if (typeof parsed.error === "string") throw new Error(parsed.error);
       const responseText = ollamaResponseText(parsed);
+      const thinkingText = ollamaResponseThinking(parsed);
       const images = collectOllamaImages(parsed);
-      if (responseText.length > 0 || images.length > 0) {
+      if (responseText.length > 0 || thinkingText.length > 0 || images.length > 0) {
         if (responseText.length > 0) fullText += responseText;
+        if (thinkingText.length > 0) fullThinking += thinkingText;
         if (images.length > 0) generatedImages = mergeOllamaImages(generatedImages, images);
-        socket.send(JSON.stringify({ type: "ollamaChunk", id, text: responseText, images }));
+        socket.send(JSON.stringify({ type: "ollamaChunk", id, text: responseText, thinking: thinkingText, images }));
       }
       if (parsed.done === true) finalStats = parsed;
     }
@@ -1110,10 +1148,12 @@ async function streamOllamaPrompt(socket, payload, userId) {
       chatId,
       modelId: model,
       text: fullText,
+      thinking: fullThinking || undefined,
       images: generatedImages,
       totalDuration: finalStats.total_duration ?? null,
       evalCount: finalStats.eval_count ?? null,
     }));
+    responseCompleted = true;
 
     if (chatId) {
       await appendChatMessages(userId, chatId, [{
@@ -1135,6 +1175,9 @@ async function streamOllamaPrompt(socket, payload, userId) {
       }]);
     }
   } finally {
+    if (responseCompleted) {
+      await unloadOllamaModel(model);
+    }
     socket.off?.("close", onClose);
   }
 }
