@@ -122,6 +122,7 @@ export class ChatService {
   readonly currentChatId = signal<string | null>(null);
   readonly chatsLoading  = signal(false);
   readonly gpuUsage      = signal<GpuUsage | null>(null);
+  readonly inferenceRunning = signal(false);
 
   readonly isFailedModel = computed(() => {
     const map = this.failedModels();
@@ -164,6 +165,7 @@ export class ChatService {
       this.connected.set(false);
       this.busy.set(false);
       this.gpuUsage.set(null);
+      this.inferenceRunning.set(false);
       // Fail any in-flight RPCs so callers can retry.
       for (const [, handlers] of this.pendingRpc) {
         handlers.reject(new Error("Connection closed."));
@@ -192,6 +194,7 @@ export class ChatService {
     this.connected.set(false);
     this.busy.set(false);
     this.gpuUsage.set(null);
+    this.inferenceRunning.set(false);
 
     for (const [, handlers] of this.pendingRpc) {
       handlers.reject(new Error("Connection closed."));
@@ -218,6 +221,10 @@ export class ChatService {
       this.pendingRpc.set(requestId, { resolve, reject });
       this.sendWs({ type, requestId, ...payload });
     });
+  }
+
+  cancelInference(): void {
+    this.sendWs({ type: "cancelInference" });
   }
 
   // ── WS-backed data loaders ────────────────────────────────────────
@@ -452,11 +459,13 @@ export class ChatService {
       }
 
       case "gpuUsage":
+        this.inferenceRunning.set(event.running);
         this.gpuUsage.set(
           event.running && typeof event.gpu === "number" && typeof event.memory === "number"
             ? { gpu: event.gpu, memory: event.memory }
             : null
         );
+        if (!event.running) this.busy.set(false);
         return;
 
       case "start":

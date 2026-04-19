@@ -49,6 +49,7 @@ const MAX_GENERATION_TOKENS = clampInteger(
   131072,
   32768
 );
+const MEMORY_CANCEL_THRESHOLD = 98;
 const DEFAULT_MAX_TOKENS = clampInteger(
   Number(process.env.MLX_MAX_TOKENS ?? 4096),
   1,
@@ -384,6 +385,12 @@ function parseGpuUsageOutput(output) {
 let gpuUsagePollTimer = null;
 let gpuUsagePolling = false;
 let activeInferenceCount = 0;
+const activeInferenceCancels = new Set();
+
+function registerInferenceCancel(cancel) {
+  activeInferenceCancels.add(cancel);
+  return () => activeInferenceCancels.delete(cancel);
+}
 
 async function pollGpuUsageOnce() {
   if (gpuUsagePolling || activeInferenceCount <= 0) return;
@@ -393,6 +400,9 @@ async function pollGpuUsageOnce() {
     const usage = parseGpuUsageOutput(stdout);
     if (usage && activeInferenceCount > 0) {
       broadcast({ type: "gpuUsage", running: true, ...usage });
+      if (usage.memory >= MEMORY_CANCEL_THRESHOLD) {
+        cancelAllInference(`Memory usage reached ${usage.memory}%. Inference stopped.`);
+      }
     }
   } catch (err) {
     console.warn(`GPU usage polling failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -404,6 +414,7 @@ async function pollGpuUsageOnce() {
 function startGpuUsagePolling() {
   activeInferenceCount += 1;
   if (activeInferenceCount !== 1) return;
+  broadcast({ type: "gpuUsage", running: true, gpu: null, memory: null });
   void pollGpuUsageOnce();
   gpuUsagePollTimer = setInterval(() => {
     void pollGpuUsageOnce();
@@ -559,6 +570,46 @@ class ModelProcess {
       this.#pending.set(id, { socket, imagePath, resolve, ...context });
       this.#worker.send({ type: "generate", id, prompt, options, imagePath });
     });
+  }
+
+  cancelGeneration(reason = "Inference cancelled.") {
+    if (this.#pending.size === 0) return false;
+
+    for (const [id, pending] of this.#pending) {
+      cleanupPromptImage(pending.imagePath);
+      const socket = pending.socket;
+      if (socket?.readyState === 1) {
+        socket.send(JSON.stringify({ type: "error", id, error: reason }));
+      }
+      pending.resolve?.();
+    }
+    this.#pending.clear();
+
+    if (this.#worker) {
+      const worker = this.#worker;
+      let exited = false;
+      worker.removeAllListeners("exit");
+      worker.removeAllListeners("message");
+      worker.once("exit", () => { exited = true; });
+      worker.kill("SIGTERM");
+      setTimeout(() => {
+        if (!exited) {
+          try { worker.kill("SIGKILL"); } catch {}
+        }
+      }, 2000);
+    }
+    this.#worker = null;
+    this.#workerReady = false;
+    this.#currentModelId = null;
+    this.#pendingModelId = null;
+    this.#loading = false;
+    this.#lastError = reason;
+    this.#isVLM = false;
+    this.#canGenerateImages = false;
+    broadcast({ type: "modelError", error: reason, failed: stmt.allFailed.all() });
+
+    setTimeout(() => this.#spawnWorker(), 500);
+    return true;
   }
 
   // ── Worker lifecycle ──────────────────────────────────────────────
@@ -737,6 +788,16 @@ class GenerationQueue {
     void this.#drain();
   }
 
+  cancelQueued(reason = "Inference cancelled.") {
+    const queued = this.#items;
+    this.#items = [];
+    for (const item of queued) {
+      if (item.socket?.readyState === 1) {
+        item.socket.send(JSON.stringify({ type: "error", id: item.id, error: reason }));
+      }
+    }
+  }
+
   async #drain() {
     if (this.#active) return;
 
@@ -775,6 +836,18 @@ class GenerationQueue {
 }
 
 const generationQueue = new GenerationQueue();
+
+function cancelAllInference(reason = "Inference cancelled.") {
+  generationQueue.cancelQueued(reason);
+  modelProcess.cancelGeneration(reason);
+  for (const cancel of [...activeInferenceCancels]) {
+    try {
+      cancel(reason);
+    } catch (err) {
+      console.warn(`Inference cancel hook failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
 
 // ─── HuggingFace model catalog cache ─────────────────────────────────
 let modelsCache = null;
@@ -1104,7 +1177,12 @@ async function streamOllamaPrompt(socket, payload, userId) {
   }
 
   const controller = new AbortController();
-  const onClose = () => controller.abort();
+  const onClose = () => controller.abort(new Error("Client disconnected."));
+  const unregisterCancel = registerInferenceCancel((reason) => {
+    if (!controller.signal.aborted) {
+      controller.abort(new Error(typeof reason === "string" ? reason : "Inference cancelled."));
+    }
+  });
   socket.once?.("close", onClose);
 
   const userAt = new Date();
@@ -1228,8 +1306,15 @@ async function streamOllamaPrompt(socket, payload, userId) {
         createdAt: new Date(),
       }]);
     }
+  } catch (err) {
+    if (controller.signal.aborted) {
+      const reason = controller.signal.reason;
+      throw new Error(reason instanceof Error ? reason.message : "Inference cancelled.");
+    }
+    throw err;
   } finally {
-    if (responseCompleted) {
+    unregisterCancel();
+    if (responseCompleted || controller.signal.aborted) {
       await unloadOllamaModel(model);
     }
     socket.off?.("close", onClose);
@@ -1439,6 +1524,12 @@ fastify.register(async (instance) => {
             error: err instanceof Error ? err.message : String(err),
           }));
         }
+        return;
+      }
+
+      // ── cancelInference ─────────────────────────────────────────
+      if (payload?.type === "cancelInference") {
+        cancelAllInference("Inference cancelled.");
         return;
       }
 

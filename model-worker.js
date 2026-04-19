@@ -34,6 +34,7 @@ if (!process.env.HF_HOME) {
 let model = null;
 let currentModelId = null;
 let currentMode = "llm";
+const activeChildren = new Set();
 
 const IMAGE_OUTPUT_DIR = join(tmpdir(), "nodemlx-generated-images");
 const DIFFUSIONKIT_COMPAT_CLI = join(process.cwd(), "scripts", "diffusionkit_cli_compat.py");
@@ -92,17 +93,39 @@ function runCommand(command, args) {
       stdio: ["ignore", "pipe", "pipe"],
       env: process.env,
     });
+    activeChildren.add(child);
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
     child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
-    child.on("error", (err) => reject(err));
+    child.on("error", (err) => {
+      activeChildren.delete(child);
+      reject(err);
+    });
     child.on("close", (code) => {
+      activeChildren.delete(child);
       if (code === 0) resolve({ stdout, stderr });
       else reject(new Error(`${command} exited with code ${code}\n${stderr || stdout}`.trim()));
     });
   });
 }
+
+function stopActiveChildren(signal = "SIGTERM") {
+  for (const child of activeChildren) {
+    try { child.kill(signal); } catch {}
+  }
+  if (signal === "SIGKILL") {
+    activeChildren.clear();
+  }
+}
+
+process.on("SIGTERM", () => {
+  stopActiveChildren();
+  setTimeout(() => {
+    stopActiveChildren("SIGKILL");
+    process.exit(143);
+  }, 500);
+});
 
 async function generateImage(prompt, modelId, options = {}) {
   await mkdir(IMAGE_OUTPUT_DIR, { recursive: true });

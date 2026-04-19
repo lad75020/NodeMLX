@@ -57,6 +57,15 @@
               <span>GPU {{ usage.gpu | number: "1.0-1" }}%</span>
               <span>Memory {{ usage.memory | number: "1.0-1" }}%</span>
             </div>
+            <button
+              *ngIf="chat.inferenceRunning()"
+              type="button"
+              class="inference-cancel-button"
+              title="Stop the running inference backend"
+              (click)="chat.cancelInference()"
+            >
+              Cancel
+            </button>
           </div>
           <div
             *ngIf="chat.inferenceMode() === 'mlx' && chat.currentModel() && !chat.modelLoading()"

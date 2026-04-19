@@ -245,6 +245,23 @@
   white-space: nowrap;
 }
 
+.inference-cancel-button {
+  min-height: 2rem;
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--app-cancel-border);
+  border-radius: 999px;
+  background: var(--app-cancel-bg);
+  color: var(--app-cancel-text);
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.inference-cancel-button:hover {
+  filter: brightness(0.97);
+}
+
 .capability-loading,
 .capability-unavailable {
   border-color: var(--app-cap-neutral-border);
