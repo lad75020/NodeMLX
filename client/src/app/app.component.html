@@ -273,16 +273,17 @@
               </div>
               <div
                 class="bubble-meta text-muted small mt-1"
-                *ngIf="msg.role === 'assistant' && (msg.tokensPerSecond || msg.images?.length)"
+                *ngIf="msg.role === 'assistant' && (msg.tokensPerSecond || msg.images?.length || (msg.provider === 'ollama' && msg.modelId))"
               >
-                <ng-container *ngIf="msg.images?.length; else tokenStats">
+                <ng-container *ngIf="msg.images?.length">
                   {{ msg.images?.length }} image{{ msg.images?.length === 1 ? "" : "s" }}
                 </ng-container>
-                <ng-template #tokenStats>
+                <ng-container *ngIf="!msg.images?.length && msg.tokensPerSecond">
                   {{ msg.tokenCount }} tokens ·
                   {{ msg.tokensPerSecond | number: "1.0-1" }} tok/s
-                </ng-template>
-                <span *ngIf="msg.modelId">· {{ msg.modelId }}</span>
+                </ng-container>
+                <span *ngIf="msg.modelId && (msg.images?.length || msg.tokensPerSecond)"> · </span>
+                <span *ngIf="msg.modelId">{{ msg.modelId }}</span>
               </div>
               <div *ngIf="!msg.pending" class="bubble-actions">
                 <button
