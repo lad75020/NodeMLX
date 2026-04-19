@@ -38,7 +38,8 @@ type FormattedBlock =
   | { kind: "chapter"; segments: FormattedTextSegment[] }
   | { kind: "paragraph"; segments: FormattedTextSegment[] }
   | { kind: "list"; items: FormattedTextSegment[][] }
-  | { kind: "table"; rows: FormattedTextSegment[][][] };
+  | { kind: "table"; rows: FormattedTextSegment[][][] }
+  | { kind: "code"; code: string; language: string | null };
 
 @Component({
   selector: "app-root",
@@ -151,7 +152,14 @@ export class AppComponent implements OnInit, AfterViewChecked {
   }
 
   protected async onCopyMessage(msg: { text?: string }): Promise<void> {
-    const text = msg.text ?? "";
+    await this.copyText(msg.text ?? "");
+  }
+
+  protected async onCopyCode(code: string): Promise<void> {
+    await this.copyText(code);
+  }
+
+  private async copyText(text: string): Promise<void> {
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -439,6 +447,23 @@ export class AppComponent implements OnInit, AfterViewChecked {
         continue;
       }
 
+      const codeMatch = /^\s*```([A-Za-z0-9_+.#-]*)\s*$/.exec(rawLine);
+      if (codeMatch) {
+        const codeLines: string[] = [];
+        i += 1;
+        while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
+          codeLines.push(lines[i]);
+          i += 1;
+        }
+        if (i < lines.length) i += 1;
+        blocks.push({
+          kind: "code",
+          code: codeLines.join("\n"),
+          language: codeMatch[1] ? codeMatch[1] : null,
+        });
+        continue;
+      }
+
       const chapterMatch = /^\s*###\s+(.+?)\s*$/.exec(rawLine);
       if (chapterMatch) {
         blocks.push({ kind: "chapter", segments: this.parseInlineSegments(chapterMatch[1]) });
@@ -490,7 +515,7 @@ export class AppComponent implements OnInit, AfterViewChecked {
           i += 1;
           break;
         }
-        if (/^\s*###\s+/.test(next) || this.parseBulletLine(next) !== null || this.parseTableRow(next)) {
+        if (/^\s*```/.test(next) || /^\s*###\s+/.test(next) || this.parseBulletLine(next) !== null || this.parseTableRow(next)) {
           break;
         }
         paragraphLines.push(trimmedNext);
