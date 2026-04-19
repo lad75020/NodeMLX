@@ -5,10 +5,10 @@
 .mode-toggle {
   display: inline-grid;
   grid-template-columns: 1fr 1fr;
-  border: 1px solid #cfd7e3;
+  border: 1px solid var(--app-toggle-border);
   border-radius: 0.5rem;
   overflow: hidden;
-  background: #f8f9fa;
+  background: var(--app-toggle-bg);
 }
 
 .mode-button {
@@ -16,15 +16,15 @@
   min-height: 2rem;
   border: 0;
   background: transparent;
-  color: #394454;
+  color: var(--app-toggle-text);
   font-size: 0.82rem;
   font-weight: 700;
   padding: 0.25rem 0.55rem;
 }
 
 .mode-button.active {
-  background: #0d6efd;
-  color: #ffffff;
+  background: var(--app-toggle-active-bg);
+  color: var(--app-toggle-active-text);
 }
 
 .mode-button:disabled {

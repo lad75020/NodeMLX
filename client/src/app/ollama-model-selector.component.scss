@@ -13,6 +13,9 @@
   margin-top: 0.25rem;
   max-height: 320px;
   overflow-y: auto;
+  background: var(--app-surface) !important;
+  border-color: var(--app-border) !important;
+  color: var(--app-text);
 }
 
 .dropdown-item {
@@ -27,12 +30,12 @@
   cursor: pointer;
 
   &.active {
-    background-color: #e9ecef;
+    background-color: var(--app-dropdown-active-bg);
   }
 
   &.is-current {
     font-weight: 600;
-    color: #0a3622;
+    color: var(--app-dropdown-current-text);
   }
 }
 

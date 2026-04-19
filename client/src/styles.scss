@@ -1,6 +1,124 @@
-html, body {
+:root {
+  color-scheme: light;
+  --app-bg: #f5f7fb;
+  --app-bg-soft: #f3f5f9;
+  --app-surface: #ffffff;
+  --app-border: #e5e7eb;
+  --app-text: #1f2937;
+  --app-text-muted: #6b7280;
+  --app-sidebar-hover: #f3f4f6;
+  --app-sidebar-active-bg: #e8f0fe;
+  --app-sidebar-active-border: #b6cdfb;
+  --app-sidebar-active-text: #0a58ca;
+  --app-sidebar-active-subtext: #1e44a6;
+  --app-dropdown-active-bg: #e9ecef;
+  --app-dropdown-current-text: #0a3622;
+  --app-failed-text: #b02a37;
+  --app-failed-active-bg: #f8d7da;
+  --app-failed-muted: #e09ba0;
+  --app-saved-text: #b8860b;
+  --app-toggle-border: #cfd7e3;
+  --app-toggle-bg: #f8f9fa;
+  --app-toggle-text: #394454;
+  --app-toggle-active-bg: #0d6efd;
+  --app-toggle-active-text: #ffffff;
+  --app-danger-bg: #fee2e2;
+  --app-danger-text: #b91c1c;
+  --app-cap-border: #cfd7e3;
+  --app-cap-bg: #f8f9fa;
+  --app-cap-text: #28323f;
+  --app-cap-neutral-border: #d5d9df;
+  --app-cap-neutral-bg: #f8f9fa;
+  --app-cap-neutral-text: #495057;
+  --app-cap-vision-border: #b7d7c4;
+  --app-cap-vision-bg: #e9f6ee;
+  --app-cap-vision-text: #146c43;
+  --app-cap-image-border: #bfd3ff;
+  --app-cap-image-bg: #eef4ff;
+  --app-cap-image-text: #0a58ca;
+  --app-cap-ollama-border: #c8d8bd;
+  --app-cap-ollama-bg: #edf7e8;
+  --app-cap-ollama-text: #2b5d22;
+  --app-overlay-rgb: 255, 255, 255;
+  --app-bubble-user-bg: #cfe2ff;
+  --app-bubble-user-text: #052c65;
+  --app-bubble-assistant-bg: #d1e7dd;
+  --app-bubble-assistant-text: #0a3622;
+  --app-table-border: rgba(15, 23, 42, 0.18);
+  --app-table-cell: rgba(255, 255, 255, 0.4);
+  --app-image-surface: #ffffff;
+  --app-attachment-border: #dee2e6;
+  --app-attachment-bg: #f8f9fa;
+
+  --bs-body-bg: var(--app-bg);
+  --bs-body-color: var(--app-text);
+  --bs-emphasis-color: var(--app-text);
+  --bs-secondary-color: var(--app-text-muted);
+  --bs-border-color: var(--app-border);
+  --bs-tertiary-bg: var(--app-surface);
+  --bs-secondary-bg: var(--app-bg-soft);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --app-bg: #0f141a;
+    --app-bg-soft: #151b23;
+    --app-surface: #1b242e;
+    --app-border: #2b3947;
+    --app-text: #dde7f3;
+    --app-text-muted: #9ab0c5;
+    --app-sidebar-hover: #222d39;
+    --app-sidebar-active-bg: #1e3554;
+    --app-sidebar-active-border: #335a8e;
+    --app-sidebar-active-text: #9dc6ff;
+    --app-sidebar-active-subtext: #c1d9ff;
+    --app-dropdown-active-bg: #2a3745;
+    --app-dropdown-current-text: #9ee0be;
+    --app-failed-text: #ff9da8;
+    --app-failed-active-bg: #4f2b31;
+    --app-failed-muted: #ffb9c0;
+    --app-saved-text: #f2d179;
+    --app-toggle-border: #3a4b5d;
+    --app-toggle-bg: #202b36;
+    --app-toggle-text: #c1d1e2;
+    --app-toggle-active-bg: #3d78d4;
+    --app-toggle-active-text: #ecf4ff;
+    --app-danger-bg: #4a2025;
+    --app-danger-text: #ffb2bc;
+    --app-cap-border: #3a4b5d;
+    --app-cap-bg: #202b36;
+    --app-cap-text: #c2d2e3;
+    --app-cap-neutral-border: #3a4b5d;
+    --app-cap-neutral-bg: #202b36;
+    --app-cap-neutral-text: #b3c5d8;
+    --app-cap-vision-border: #2d6148;
+    --app-cap-vision-bg: #183527;
+    --app-cap-vision-text: #98e1bb;
+    --app-cap-image-border: #2f5e94;
+    --app-cap-image-bg: #182d46;
+    --app-cap-image-text: #a8cdff;
+    --app-cap-ollama-border: #4b693d;
+    --app-cap-ollama-bg: #263620;
+    --app-cap-ollama-text: #bbdf9f;
+    --app-overlay-rgb: 14, 19, 26;
+    --app-bubble-user-bg: #244872;
+    --app-bubble-user-text: #d5e8ff;
+    --app-bubble-assistant-bg: #1d4336;
+    --app-bubble-assistant-text: #c4f2dc;
+    --app-table-border: rgba(156, 186, 218, 0.28);
+    --app-table-cell: rgba(10, 16, 24, 0.55);
+    --app-image-surface: #111920;
+    --app-attachment-border: #34485c;
+    --app-attachment-bg: #1b2530;
+  }
+}
+
+html,
+body {
   height: 100%;
   margin: 0;
-  background: #f5f7fb;
+  background: var(--app-bg);
+  color: var(--app-text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
