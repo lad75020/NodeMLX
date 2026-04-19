@@ -65,6 +65,11 @@ export interface OllamaModelDetails {
   modifiedAt: string | null;
 }
 
+export interface GpuUsage {
+  gpu: number;
+  memory: number;
+}
+
 export interface ChatSummary {
   id: string;
   startedAt: string;
@@ -82,6 +87,7 @@ type ServerEvent =
   | { type: "modelLoading"; modelId: string | null }
   | { type: "modelReady";   modelId: string; isVLM?: boolean; canGenerateImages?: boolean }
   | { type: "modelError";   modelId?: string; error: string; failed?: FailedModel[] }
+  | { type: "gpuUsage"; running: boolean; gpu: number | null; memory: number | null }
   | { type: "rpcResult"; requestId: string; data?: any; error?: string };
 
 @Injectable({ providedIn: "root" })
@@ -115,6 +121,7 @@ export class ChatService {
   readonly chats         = signal<ChatSummary[]>([]);
   readonly currentChatId = signal<string | null>(null);
   readonly chatsLoading  = signal(false);
+  readonly gpuUsage      = signal<GpuUsage | null>(null);
 
   readonly isFailedModel = computed(() => {
     const map = this.failedModels();
@@ -156,6 +163,7 @@ export class ChatService {
       if (this.socket === ws) this.socket = undefined;
       this.connected.set(false);
       this.busy.set(false);
+      this.gpuUsage.set(null);
       // Fail any in-flight RPCs so callers can retry.
       for (const [, handlers] of this.pendingRpc) {
         handlers.reject(new Error("Connection closed."));
@@ -183,6 +191,7 @@ export class ChatService {
     }
     this.connected.set(false);
     this.busy.set(false);
+    this.gpuUsage.set(null);
 
     for (const [, handlers] of this.pendingRpc) {
       handlers.reject(new Error("Connection closed."));
@@ -441,6 +450,14 @@ export class ChatService {
         else handlers.resolve(event.data ?? {});
         return;
       }
+
+      case "gpuUsage":
+        this.gpuUsage.set(
+          event.running && typeof event.gpu === "number" && typeof event.memory === "number"
+            ? { gpu: event.gpu, memory: event.memory }
+            : null
+        );
+        return;
 
       case "start":
         if (event.chatId && !this.currentChatId()) this.currentChatId.set(event.chatId);

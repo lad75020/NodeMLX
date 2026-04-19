@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { fork } from "node:child_process";
+import { execFile, fork } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -28,6 +28,7 @@ const Database = require("better-sqlite3");
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WORKER_PATH = join(__dirname, "model-worker.js");
+const GPU_USAGE_PATH = join(__dirname, "utils", "GPUUsage");
 
 const DEFAULT_MODEL = process.env.MLX_MODEL ?? RECOMMENDED_MODELS["qwen-3-1.7b"];
 const PORT = Number(process.env.PORT ?? 3000);
@@ -181,6 +182,7 @@ const stmt = {
 stmt.deleteExpiredSessions.run();
 
 const scryptAsync = promisify(scrypt);
+const execFileAsync = promisify(execFile);
 
 function normalizeUsername(value) {
   if (typeof value !== "string") return "";
@@ -366,6 +368,56 @@ function broadcast(msg) {
   for (const s of sockets) {
     if (s.readyState === 1) s.send(payload);
   }
+}
+
+function parseGpuUsageOutput(output) {
+  const text = typeof output === "string" ? output : "";
+  const gpuMatch = /GPU Usage:\s*([0-9]+(?:\.[0-9]+)?)%/i.exec(text);
+  const memoryMatch = /Memory Usage:\s*([0-9]+(?:\.[0-9]+)?)%/i.exec(text);
+  if (!gpuMatch || !memoryMatch) return null;
+  return {
+    gpu: Number(gpuMatch[1]),
+    memory: Number(memoryMatch[1]),
+  };
+}
+
+let gpuUsagePollTimer = null;
+let gpuUsagePolling = false;
+let activeInferenceCount = 0;
+
+async function pollGpuUsageOnce() {
+  if (gpuUsagePolling || activeInferenceCount <= 0) return;
+  gpuUsagePolling = true;
+  try {
+    const { stdout } = await execFileAsync(GPU_USAGE_PATH);
+    const usage = parseGpuUsageOutput(stdout);
+    if (usage && activeInferenceCount > 0) {
+      broadcast({ type: "gpuUsage", running: true, ...usage });
+    }
+  } catch (err) {
+    console.warn(`GPU usage polling failed: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    gpuUsagePolling = false;
+  }
+}
+
+function startGpuUsagePolling() {
+  activeInferenceCount += 1;
+  if (activeInferenceCount !== 1) return;
+  void pollGpuUsageOnce();
+  gpuUsagePollTimer = setInterval(() => {
+    void pollGpuUsageOnce();
+  }, 1000);
+}
+
+function stopGpuUsagePolling() {
+  activeInferenceCount = Math.max(0, activeInferenceCount - 1);
+  if (activeInferenceCount > 0) return;
+  if (gpuUsagePollTimer) {
+    clearInterval(gpuUsagePollTimer);
+    gpuUsagePollTimer = null;
+  }
+  broadcast({ type: "gpuUsage", running: false, gpu: null, memory: null });
 }
 
 async function persistPromptImage(image) {
@@ -695,6 +747,7 @@ class GenerationQueue {
       if (item.socket?.readyState !== 1) continue;
 
       this.#active = true;
+      startGpuUsagePolling();
       try {
         await item.run();
       } catch (err) {
@@ -703,6 +756,7 @@ class GenerationQueue {
           item.socket.send(JSON.stringify({ type: "error", id: item.id, error: message }));
         }
       } finally {
+        stopGpuUsagePolling();
         this.#active = false;
       }
     }

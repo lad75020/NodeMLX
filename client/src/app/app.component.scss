@@ -222,6 +222,29 @@
   color: var(--app-cap-ollama-text);
 }
 
+.mode-status-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.gpu-usage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 2rem;
+  padding: 0.25rem 0.65rem;
+  border: 1px solid var(--app-gpu-chip-border);
+  border-radius: 999px;
+  background: var(--app-gpu-chip-bg);
+  color: var(--app-gpu-chip-text);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .capability-loading,
 .capability-unavailable {
   border-color: var(--app-cap-neutral-border);

@@ -46,7 +46,18 @@
       <header class="chat-header border-bottom bg-white px-3 py-2">
         <div class="d-flex align-items-center gap-3 flex-wrap">
           <h1 class="h5 mb-0 order-1">NodeMLX Chat</h1>
-          <app-inference-mode-toggle class="order-1 me-auto"></app-inference-mode-toggle>
+          <div class="mode-status-group order-1 me-auto">
+            <app-inference-mode-toggle></app-inference-mode-toggle>
+            <div
+              *ngIf="chat.gpuUsage() as usage"
+              class="gpu-usage-chip"
+              aria-live="polite"
+              title="GPU and memory usage while inference is running"
+            >
+              <span>GPU {{ usage.gpu | number: "1.0-1" }}%</span>
+              <span>Memory {{ usage.memory | number: "1.0-1" }}%</span>
+            </div>
+          </div>
           <div
             *ngIf="chat.inferenceMode() === 'mlx' && chat.currentModel() && !chat.modelLoading()"
             class="capability-strip order-2 order-md-1"
