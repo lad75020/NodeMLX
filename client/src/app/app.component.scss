@@ -262,6 +262,23 @@
   filter: brightness(0.97);
 }
 
+.llama-model-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.llama-model-name {
+  max-width: min(28vw, 18rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--app-text-muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
 .capability-loading,
 .capability-unavailable {
   border-color: var(--app-cap-neutral-border);

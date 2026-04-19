@@ -1,9 +1,9 @@
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { execFile, fork } from "node:child_process";
+import { execFile, fork, spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
@@ -38,6 +38,8 @@ const MODELS_TTL_MS = 10 * 60 * 1000;
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://127.0.0.1:11434";
 const IMAGE_TMP_DIR = join(tmpdir(), "nodemlx-chat-images");
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_LLAMA_MODEL_BYTES = 16_000_000_000;
+const MAX_LLAMA_OUTPUT_CHARS = 2_000_000;
 const SESSION_COOKIE_NAME = "nodemlx_session";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MIN_USERNAME_LENGTH = 3;
@@ -429,6 +431,32 @@ function stopGpuUsagePolling() {
     gpuUsagePollTimer = null;
   }
   broadcast({ type: "gpuUsage", running: false, gpu: null, memory: null });
+}
+
+async function validateLlamaModelFile(modelPath) {
+  const filePath = typeof modelPath === "string" ? modelPath.trim() : "";
+  if (!filePath) throw new Error("Choose a Llama.cpp model file first.");
+
+  const info = await stat(filePath).catch((err) => {
+    throw new Error(`Llama.cpp model file is not available: ${err instanceof Error ? err.message : String(err)}`);
+  });
+  if (!info.isFile()) throw new Error("Llama.cpp model path must point to a file.");
+  if (info.size > MAX_LLAMA_MODEL_BYTES) {
+    throw new Error("Llama.cpp model file must be 16 GB or smaller.");
+  }
+  return {
+    path: filePath,
+    name: basename(filePath),
+    size: info.size,
+  };
+}
+
+async function pickLlamaModelFile() {
+  const { stdout } = await execFileAsync("osascript", [
+    "-e",
+    'POSIX path of (choose file with prompt "Choose a Llama.cpp model file")',
+  ]);
+  return validateLlamaModelFile(stdout.trim());
 }
 
 async function persistPromptImage(image) {
@@ -1321,6 +1349,196 @@ async function streamOllamaPrompt(socket, payload, userId) {
   }
 }
 
+async function streamLlamaPrompt(socket, payload, userId) {
+  const id = payload.id ?? String(Date.now());
+  const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
+  const model = await validateLlamaModelFile(payload.modelPath);
+  if (!prompt) throw new Error("Prompt required.");
+
+  const { chatId, created } = await ensureUserChat(
+    userId,
+    typeof payload.chatId === "string" ? payload.chatId : null
+  );
+  if (created) {
+    socket.send(JSON.stringify({ type: "chatCreated", id, chat: created }));
+  }
+
+  const userAt = new Date();
+  let fullText = "";
+  let fullThinking = "";
+  let stderr = "";
+  let settled = false;
+  let cancelReason = null;
+  let outputLimitError = null;
+  let parseBuffer = "";
+  let llamaPhase = "before-thinking";
+  socket.send(JSON.stringify({ type: "start", id, chatId }));
+  const maxTokens = clampInteger(payload.maxTokens, 1, MAX_GENERATION_TOKENS, DEFAULT_MAX_TOKENS);
+
+  const sendLlamaChunk = (chunk) => {
+    if (!chunk) return;
+    if (socket.readyState === 1) {
+      socket.send(JSON.stringify({ type: "llamaChunk", id, ...chunk }));
+    }
+  };
+  const appendLlamaText = (text) => {
+    if (!text) return;
+    const remaining = MAX_LLAMA_OUTPUT_CHARS - fullText.length;
+    if (remaining <= 0) {
+      outputLimitError = new Error("Llama.cpp output exceeded the 2,000,000 character safety limit.");
+      try { child.kill("SIGTERM"); } catch {}
+      return;
+    }
+    const safeText = text.length > remaining ? text.slice(0, remaining) : text;
+    fullText = `${fullText}${safeText}`;
+    sendLlamaChunk({ text: safeText });
+    if (safeText.length < text.length) {
+      outputLimitError = new Error("Llama.cpp output exceeded the 2,000,000 character safety limit.");
+      try { child.kill("SIGTERM"); } catch {}
+    }
+  };
+  const appendLlamaThinking = (thinking) => {
+    if (!thinking) return;
+    fullThinking = `${fullThinking}${thinking}`;
+    sendLlamaChunk({ thinking });
+  };
+  const consumeLlamaOutput = (raw) => {
+    parseBuffer += raw;
+    while (parseBuffer) {
+      if (llamaPhase === "before-thinking") {
+        const start = parseBuffer.indexOf("[Start thinking]");
+        if (start === -1) {
+          parseBuffer = parseBuffer.slice(Math.max(0, parseBuffer.length - "[Start thinking]".length + 1));
+          return;
+        }
+        parseBuffer = parseBuffer.slice(start + "[Start thinking]".length);
+        llamaPhase = "thinking";
+      }
+
+      if (llamaPhase === "thinking") {
+        const end = parseBuffer.indexOf("[End thinking]");
+        if (end === -1) {
+          const keep = "[End thinking]".length - 1;
+          const emitLength = Math.max(0, parseBuffer.length - keep);
+          if (emitLength > 0) {
+            appendLlamaThinking(parseBuffer.slice(0, emitLength));
+            parseBuffer = parseBuffer.slice(emitLength);
+          }
+          return;
+        }
+        appendLlamaThinking(parseBuffer.slice(0, end));
+        parseBuffer = parseBuffer.slice(end + "[End thinking]".length);
+        llamaPhase = "answer";
+      }
+
+      if (llamaPhase === "answer") {
+        appendLlamaText(parseBuffer);
+        parseBuffer = "";
+      }
+    }
+  };
+  const flushLlamaOutput = () => {
+    if (llamaPhase === "thinking" && parseBuffer) {
+      appendLlamaThinking(parseBuffer);
+    } else if (llamaPhase === "answer" && parseBuffer) {
+      appendLlamaText(parseBuffer);
+    }
+    parseBuffer = "";
+  };
+
+  const child = spawn("llama-cli", [
+    "--simple-io",
+    "--single-turn",
+    "--no-display-prompt",
+    "--log-disable",
+    "-n", String(maxTokens),
+    "-m", model.path,
+    "-p", prompt,
+  ], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      LLAMA_LOG_COLORS: "off",
+      NO_COLOR: "1",
+    },
+  });
+
+  const unregisterCancel = registerInferenceCancel((reason) => {
+    if (settled) return;
+    cancelReason = typeof reason === "string" ? reason : "Inference cancelled.";
+    try { child.kill("SIGTERM"); } catch {}
+    setTimeout(() => {
+      if (!settled) {
+        try { child.kill("SIGKILL"); } catch {}
+      }
+    }, 2000);
+  });
+  const onClose = () => {
+    try { child.kill("SIGTERM"); } catch {}
+  };
+  socket.once?.("close", onClose);
+
+  try {
+    await new Promise((resolve, reject) => {
+      child.stdout.on("data", (chunk) => {
+        if (outputLimitError) return;
+        const text = chunk.toString();
+        if (!text) return;
+        consumeLlamaOutput(text);
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.on("error", (err) => reject(err));
+      child.on("close", (code, signal) => {
+        settled = true;
+        if (code === 0) resolve();
+        else if (outputLimitError) reject(outputLimitError);
+        else if (cancelReason) reject(new Error(cancelReason));
+        else reject(new Error(
+          signal
+            ? `llama-cli stopped by ${signal}.`
+            : `llama-cli exited with code ${code}${stderr ? `: ${stderr.trim()}` : "."}`
+        ));
+      });
+    });
+    flushLlamaOutput();
+    if (outputLimitError) throw outputLimitError;
+
+    socket.send(JSON.stringify({
+      type: "llamaDone",
+      id,
+      chatId,
+      modelPath: model.path,
+      modelName: model.name,
+      text: fullText,
+      thinking: fullThinking || undefined,
+    }));
+
+    if (chatId) {
+      await appendChatMessages(userId, chatId, [{
+        id,
+        role: "user",
+        text: prompt,
+        provider: "llamacpp",
+        createdAt: userAt,
+      }, {
+        id: `${id}:reply`,
+        role: "assistant",
+        text: fullText,
+        thinking: fullThinking || undefined,
+        provider: "llamacpp",
+        modelId: model.name,
+        createdAt: new Date(),
+      }]);
+    }
+  } finally {
+    settled = true;
+    unregisterCancel();
+    socket.off?.("close", onClose);
+  }
+}
+
 // ─── Fastify ─────────────────────────────────────────────────────────
 const fastify = Fastify({ logger: true });
 await fastify.register(fastifyWebsocket);
@@ -1416,6 +1634,10 @@ async function rpcShowOllamaModel({ modelId }) {
   return { model: await showOllamaModel(modelId) };
 }
 
+async function rpcPickLlamaModelFile() {
+  return { model: await pickLlamaModelFile() };
+}
+
 async function rpcListChats(_payload, { userId }) {
   if (!chatsCol) throw new Error("Chat storage unavailable.");
   if (typeof userId !== "number") throw new Error("Unauthorized.");
@@ -1447,6 +1669,7 @@ async function rpcOpenChat({ chatId }, { userId }) {
       id: m.id,
       role: m.role,
       text: m.text ?? "",
+      thinking: m.thinking ?? undefined,
       provider: m.provider ?? undefined,
       image: m.image ?? undefined,
       images: m.images ?? undefined,
@@ -1480,6 +1703,7 @@ const rpcHandlers = {
   listModels:       rpcListModels,
   listOllamaModels: rpcListOllamaModels,
   showOllamaModel:  rpcShowOllamaModel,
+  pickLlamaModelFile: rpcPickLlamaModelFile,
   listFailedModels: rpcListFailedModels,
   listChats:        rpcListChats,
   openChat:         rpcOpenChat,
@@ -1553,6 +1777,17 @@ fastify.register(async (instance) => {
           id,
           socket,
           run: () => streamOllamaPrompt(socket, { ...payload, id }, session.userId),
+        });
+        return;
+      }
+
+      // ── llamaPrompt ───────────────────────────────────────────────
+      if (payload?.type === "llamaPrompt") {
+        const id = payload.id ?? String(Date.now());
+        generationQueue.enqueue({
+          id,
+          socket,
+          run: () => streamLlamaPrompt(socket, { ...payload, id }, session.userId),
         });
         return;
       }

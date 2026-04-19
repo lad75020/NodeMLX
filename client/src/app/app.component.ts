@@ -70,9 +70,10 @@ export class AppComponent implements OnInit, AfterViewChecked {
   private lastImagePresetModel: string | null = null;
   private formattedTextCache = new Map<string, FormattedBlock[]>();
   private readonly modeEffect = effect(() => {
-    const canUseImage = this.chat.inferenceMode() === "mlx"
+    const mode = this.chat.inferenceMode();
+    const canUseImage = mode === "mlx"
       ? this.chat.supportsVision()
-      : this.chat.ollamaCapabilitiesLoading() || this.hasOllamaCapability("vision");
+      : mode === "ollama" && (this.chat.ollamaCapabilitiesLoading() || this.hasOllamaCapability("vision"));
     if (this.selectedImage && !canUseImage) {
       this.clearImage();
     }
@@ -241,6 +242,10 @@ export class AppComponent implements OnInit, AfterViewChecked {
     this.imageError = null;
   }
 
+  protected pickLlamaModelFile(): void {
+    void this.chat.pickLlamaModelFile();
+  }
+
   protected canSend(): boolean {
     if (this.chat.inferenceMode() === "ollama") {
       return (
@@ -249,6 +254,14 @@ export class AppComponent implements OnInit, AfterViewChecked {
         !!this.chat.currentOllamaModel() &&
         (!this.selectedImage || this.hasOllamaCapability("vision")) &&
         (!!this.prompt.trim() || !!this.selectedImage)
+      );
+    }
+    if (this.chat.inferenceMode() === "llamacpp") {
+      return (
+        this.chat.connected() &&
+        !this.chat.busy() &&
+        !!this.chat.currentLlamaModel() &&
+        !!this.prompt.trim()
       );
     }
 
@@ -267,11 +280,15 @@ export class AppComponent implements OnInit, AfterViewChecked {
     if (this.chat.inferenceMode() === "ollama") {
       return !!this.chat.currentOllamaModel() && this.hasOllamaCapability("vision");
     }
+    if (this.chat.inferenceMode() === "llamacpp") return false;
 
     return !this.chat.modelLoading() && !!this.chat.currentModel() && this.chat.supportsVision();
   }
 
   protected imageButtonTooltip(): string {
+    if (this.chat.inferenceMode() === "llamacpp") {
+      return "Image input is not available for Llama.cpp";
+    }
     if (this.chat.inferenceMode() === "ollama") {
       if (!this.chat.currentOllamaModel()) return "Select an Ollama model first";
       if (this.chat.ollamaCapabilitiesLoading()) return "Model capabilities are loading…";
@@ -287,9 +304,11 @@ export class AppComponent implements OnInit, AfterViewChecked {
   }
 
   protected usesImageGenerationControls(): boolean {
-    return this.chat.inferenceMode() === "mlx"
-      ? this.chat.supportsImageGeneration()
-      : this.hasOllamaCapability("image") || this.hasOllamaCapability("imagegeneration");
+    if (this.chat.inferenceMode() === "mlx") return this.chat.supportsImageGeneration();
+    if (this.chat.inferenceMode() === "ollama") {
+      return this.hasOllamaCapability("image") || this.hasOllamaCapability("imagegeneration");
+    }
+    return false;
   }
 
   protected canEditImageSettings(): boolean {
@@ -306,6 +325,11 @@ export class AppComponent implements OnInit, AfterViewChecked {
   }
 
   protected promptPlaceholder(): string {
+    if (this.chat.inferenceMode() === "llamacpp") {
+      return this.chat.currentLlamaModel()
+        ? "Type a prompt for Llama.cpp"
+        : "Pick a Llama.cpp model file first";
+    }
     if (this.chat.inferenceMode() === "ollama") {
       if (this.usesImageGenerationControls()) return "Describe the image you want to generate with Ollama";
       return this.hasOllamaCapability("vision")

@@ -142,13 +142,38 @@
               </span>
             </ng-container>
           </div>
-          <app-model-selector
-            *ngIf="chat.inferenceMode() === 'mlx'; else ollamaSelector"
-            class="order-2 order-md-1"
-          ></app-model-selector>
-          <ng-template #ollamaSelector>
-            <app-ollama-model-selector class="order-2 order-md-1"></app-ollama-model-selector>
-          </ng-template>
+          <ng-container [ngSwitch]="chat.inferenceMode()">
+            <app-model-selector
+              *ngSwitchCase="'mlx'"
+              class="order-2 order-md-1"
+            ></app-model-selector>
+            <app-ollama-model-selector
+              *ngSwitchCase="'ollama'"
+              class="order-2 order-md-1"
+            ></app-ollama-model-selector>
+            <div
+              *ngSwitchCase="'llamacpp'"
+              class="llama-model-picker order-2 order-md-1"
+            >
+              <button
+                type="button"
+                class="btn btn-outline-secondary btn-sm"
+                [disabled]="chat.busy() || chat.llamaModelPicking()"
+                (click)="pickLlamaModelFile()"
+              >
+                {{ chat.currentLlamaModel() ? "Change model" : "Pick model file" }}
+              </button>
+              <span
+                *ngIf="chat.currentLlamaModel() as model"
+                class="llama-model-name"
+                [title]="model.path"
+              >
+                {{ model.name }}
+              </span>
+              <span *ngIf="chat.llamaModelPicking()" class="text-muted small">Choosing…</span>
+              <span *ngIf="chat.llamaModelError() as err" class="text-danger small">{{ err }}</span>
+            </div>
+          </ng-container>
         </div>
         <ng-container *ngIf="chat.inferenceMode() === 'mlx'">
           <div
@@ -170,6 +195,9 @@
             <ng-container *ngIf="chat.inferenceMode() === 'ollama' && chat.currentOllamaModel()">
               Ask Ollama anything to get started.
             </ng-container>
+            <ng-container *ngIf="chat.inferenceMode() === 'llamacpp' && chat.currentLlamaModel()">
+              Ask Llama.cpp anything to get started.
+            </ng-container>
             <ng-container *ngIf="chat.inferenceMode() === 'mlx' && chat.currentModel() && !chat.modelLoading()">
               {{ chat.supportsImageGeneration() ? "Describe the image you want to generate." : "Ask the model anything to get started." }}
             </ng-container>
@@ -181,6 +209,9 @@
             </ng-container>
             <ng-container *ngIf="chat.inferenceMode() === 'ollama' && !chat.currentOllamaModel()">
               Pick an Ollama model above to begin.
+            </ng-container>
+            <ng-container *ngIf="chat.inferenceMode() === 'llamacpp' && !chat.currentLlamaModel()">
+              Pick a Llama.cpp model file above to begin.
             </ng-container>
           </div>
 
@@ -273,7 +304,7 @@
               </div>
               <div
                 class="bubble-meta text-muted small mt-1"
-                *ngIf="msg.role === 'assistant' && (msg.tokensPerSecond || msg.images?.length || (msg.provider === 'ollama' && msg.modelId))"
+                *ngIf="msg.role === 'assistant' && (msg.tokensPerSecond || msg.images?.length || ((msg.provider === 'ollama' || msg.provider === 'llamacpp') && msg.modelId))"
               >
                 <ng-container *ngIf="msg.images?.length">
                   {{ msg.images?.length }} image{{ msg.images?.length === 1 ? "" : "s" }}
@@ -456,7 +487,7 @@
               [(ngModel)]="prompt"
               name="prompt"
               (keydown)="onKeydown($event)"
-              [disabled]="!chat.connected() || chat.busy() || (chat.inferenceMode() === 'mlx' && (chat.modelLoading() || !chat.currentModel())) || (chat.inferenceMode() === 'ollama' && !chat.currentOllamaModel())"
+              [disabled]="!chat.connected() || chat.busy() || (chat.inferenceMode() === 'mlx' && (chat.modelLoading() || !chat.currentModel())) || (chat.inferenceMode() === 'ollama' && !chat.currentOllamaModel()) || (chat.inferenceMode() === 'llamacpp' && !chat.currentLlamaModel())"
               aria-label="Prompt"
             ></textarea>
             <button

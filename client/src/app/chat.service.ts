@@ -1,7 +1,7 @@
 import { Injectable, signal, computed } from "@angular/core";
 
 export type Role = "user" | "assistant";
-export type InferenceMode = "mlx" | "ollama";
+export type InferenceMode = "mlx" | "ollama" | "llamacpp";
 
 export interface ChatMessage {
   id: string;
@@ -70,6 +70,12 @@ export interface GpuUsage {
   memory: number;
 }
 
+export interface LlamaModelFile {
+  path: string;
+  name: string;
+  size: number;
+}
+
 export interface ChatSummary {
   id: string;
   startedAt: string;
@@ -83,6 +89,8 @@ type ServerEvent =
   | { type: "response"; id: string; chatId?: string | null; modelId?: string; text: string; images?: ChatImageAttachment[]; tokenCount: number; tokensPerSecond: number }
   | { type: "ollamaChunk"; id: string; text?: string; thinking?: string; images?: ChatImageAttachment[] }
   | { type: "ollamaDone"; id: string; chatId?: string | null; modelId: string; text: string; thinking?: string; images?: ChatImageAttachment[]; totalDuration?: number | null; evalCount?: number | null }
+  | { type: "llamaChunk"; id: string; text?: string; thinking?: string }
+  | { type: "llamaDone"; id: string; chatId?: string | null; modelPath: string; modelName: string; text: string; thinking?: string }
   | { type: "error"; id?: string; error: string }
   | { type: "modelLoading"; modelId: string | null }
   | { type: "modelReady";   modelId: string; isVLM?: boolean; canGenerateImages?: boolean }
@@ -117,6 +125,9 @@ export class ChatService {
   readonly ollamaCapabilitiesLoading = signal(false);
   readonly ollamaCapabilitiesError   = signal<string | null>(null);
   readonly ollamaUrl           = signal<string | null>(null);
+  readonly currentLlamaModel   = signal<LlamaModelFile | null>(null);
+  readonly llamaModelPicking   = signal(false);
+  readonly llamaModelError     = signal<string | null>(null);
 
   readonly chats         = signal<ChatSummary[]>([]);
   readonly currentChatId = signal<string | null>(null);
@@ -228,6 +239,20 @@ export class ChatService {
   }
 
   // ── WS-backed data loaders ────────────────────────────────────────
+  async pickLlamaModelFile(): Promise<void> {
+    if (this.llamaModelPicking() || this.busy()) return;
+    this.llamaModelPicking.set(true);
+    this.llamaModelError.set(null);
+    try {
+      const body = await this.rpc<{ model: LlamaModelFile }>("pickLlamaModelFile");
+      this.currentLlamaModel.set(body.model ?? null);
+    } catch (err) {
+      this.llamaModelError.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.llamaModelPicking.set(false);
+    }
+  }
+
   async loadAvailableModels(refresh = false): Promise<void> {
     this.modelsLoading.set(true);
     this.modelsError.set(null);
@@ -384,6 +409,10 @@ export class ChatService {
       this.sendOllama(prompt, image, options);
       return;
     }
+    if (this.inferenceMode() === "llamacpp") {
+      this.sendLlama(prompt, options);
+      return;
+    }
 
     const text = prompt.trim() || (image ? "Describe this image." : "");
     if ((!text && !image) || this.busy() || this.modelLoading() || !this.currentModel()) return;
@@ -406,6 +435,28 @@ export class ChatService {
       imageHeight: options.imageHeight,
       steps: options.steps,
       seed: options.seed,
+    });
+  }
+
+  private sendLlama(prompt: string, options: ChatGenerationOptions = {}): void {
+    const text = prompt.trim();
+    const model = this.currentLlamaModel();
+    if (!text || this.busy() || !model) return;
+
+    const id = crypto.randomUUID();
+    this.messages.update((list) => [
+      ...list,
+      { id, role: "user", text, provider: "llamacpp" },
+      { id: `${id}:reply`, role: "assistant", text: "", pending: true, modelId: model.name, provider: "llamacpp" },
+    ]);
+    this.busy.set(true);
+    this.sendWs({
+      type: "llamaPrompt",
+      id,
+      chatId: this.currentChatId(),
+      modelPath: model.path,
+      prompt: text,
+      maxTokens: options.maxTokens,
     });
   }
 
@@ -550,6 +601,51 @@ export class ChatService {
                   modelId: event.modelId,
                   tokenCount: event.evalCount ?? undefined,
                 })
+              : msg
+          )
+        );
+        this.busy.set(false);
+        {
+          const cid = this.currentChatId();
+          if (cid) {
+            const current = this.chats().find((c) => c.id === cid);
+            if (!current || current.title === null) void this.loadChats();
+          }
+        }
+        return;
+
+      case "llamaChunk":
+        this.messages.update((list) =>
+          list.map((msg) =>
+            msg.id === `${event.id}:reply`
+              ? {
+                  ...msg,
+                  text: `${msg.text ?? ""}${event.text ?? ""}`,
+                  thinking: `${msg.thinking ?? ""}${event.thinking ?? ""}` || undefined,
+                  pending: true,
+                  queued: false,
+                  queuePosition: undefined,
+                  provider: "llamacpp",
+                }
+              : msg
+          )
+        );
+        return;
+
+      case "llamaDone":
+        this.messages.update((list) =>
+          list.map((msg) =>
+            msg.id === `${event.id}:reply`
+              ? {
+                  ...msg,
+                  text: event.text,
+                  thinking: event.thinking ?? msg.thinking,
+                  pending: false,
+                  queued: false,
+                  queuePosition: undefined,
+                  provider: "llamacpp",
+                  modelId: event.modelName,
+                }
               : msg
           )
         );
@@ -734,6 +830,11 @@ export class ChatService {
     this.ollamaCapabilitiesError.set(null);
     this.ollamaDetailsRequestSeq += 1;
     this.ollamaUrl.set(null);
+    this.currentLlamaModel.set(null);
+    this.llamaModelPicking.set(false);
+    this.llamaModelError.set(null);
+    this.gpuUsage.set(null);
+    this.inferenceRunning.set(false);
   }
 
   private scheduleReconnect(): void {

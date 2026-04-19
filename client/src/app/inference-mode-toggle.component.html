@@ -19,4 +19,14 @@
   >
     Ollama
   </button>
+  <button
+    type="button"
+    class="mode-button"
+    [class.active]="chat.inferenceMode() === 'llamacpp'"
+    [disabled]="chat.busy()"
+    title="Use llama.cpp inference"
+    (click)="setMode('llamacpp')"
+  >
+    Llama.cpp
+  </button>
 </div>
