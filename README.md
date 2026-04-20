@@ -68,3 +68,14 @@ npm run user:add -- <username> --db /path/to/mlx-chat.db
 
 Client → server: `{ "type": "prompt", "id": "...", "prompt": "..." }`
 Server → client: `{ "type": "start" | "response" | "error", ... }`
+
+## Backend API Documentation
+
+- OpenAPI JSON: `GET /api/openapi.json`
+- Browser docs: `GET /api/docs`
+- Human-readable protocol guide: [`docs/API.md`](docs/API.md)
+
+The current Angular frontend still uses the existing `/ws` WebSocket protocol.
+Other frontends should authenticate with the HTTP auth endpoints, preserve the
+`nodemlx_session` cookie for HTTP requests, then connect to `/ws?token=<jwt>`
+using the JWT returned by login or session restore.

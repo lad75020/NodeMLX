@@ -130,7 +130,8 @@ export class AppComponent implements OnInit, AfterViewChecked {
   }
 
   private async connectChat(): Promise<void> {
-    this.chat.connect();
+    const connected = await this.chat.connect(this.auth.websocketToken());
+    if (!connected) return;
     await this.chat.loadChats();
   }
 

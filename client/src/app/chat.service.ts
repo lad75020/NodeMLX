@@ -154,20 +154,39 @@ export class ChatService {
   private readonly outbox: string[] = [];
   private readonly pendingRpc = new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void }>();
   private ollamaDetailsRequestSeq = 0;
+  private websocketToken: string | null = null;
 
-  connect(): void {
+  setWebsocketToken(token: string | null): void {
+    const normalized = token?.trim() || null;
+    if (this.websocketToken === normalized) return;
+    this.websocketToken = normalized;
+    if (this.socket?.readyState === WebSocket.OPEN || this.socket?.readyState === WebSocket.CONNECTING) {
+      this.disconnect();
+    }
+  }
+
+  connect(token?: string | null): Promise<boolean> {
+    if (token !== undefined) this.setWebsocketToken(token);
     if (
       this.socket &&
-      (this.socket.readyState === WebSocket.OPEN ||
-        this.socket.readyState === WebSocket.CONNECTING)
-    ) return;
+      this.socket.readyState === WebSocket.OPEN
+    ) return Promise.resolve(true);
+    if (
+      this.socket &&
+      this.socket.readyState === WebSocket.CONNECTING
+    ) return this.waitForSocketOpen(this.socket);
+    if (!this.websocketToken) {
+      this.connected.set(false);
+      return Promise.resolve(false);
+    }
     this.shouldReconnect = true;
 
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(this.websocketToken)}`);
     this.socket = ws;
 
     ws.addEventListener("open", () => {
+      if (this.socket !== ws) return;
       this.connected.set(true);
       while (this.outbox.length > 0) {
         const msg = this.outbox.shift();
@@ -175,7 +194,8 @@ export class ChatService {
       }
     });
     ws.addEventListener("close", (event) => {
-      if (this.socket === ws) this.socket = undefined;
+      if (this.socket !== ws) return;
+      this.socket = undefined;
       this.connected.set(false);
       this.busy.set(false);
       this.gpuUsage.set(null);
@@ -188,10 +208,15 @@ export class ChatService {
       if (!this.shouldReconnect || event.code === 1000 || event.code === 4401) return;
       this.scheduleReconnect();
     });
-    ws.addEventListener("error", () => this.connected.set(false));
+    ws.addEventListener("error", () => {
+      if (this.socket === ws) this.connected.set(false);
+    });
     ws.addEventListener("message", (ev) => {
+      if (this.socket !== ws) return;
       try { this.handleEvent(JSON.parse(ev.data) as ServerEvent); } catch {}
     });
+
+    return this.waitForSocketOpen(ws);
   }
 
   disconnect(clearState = false): void {
@@ -220,6 +245,34 @@ export class ChatService {
   }
 
   // ── RPC over WebSocket ────────────────────────────────────────────
+  private waitForSocketOpen(ws: WebSocket, timeoutMs = 5000): Promise<boolean> {
+    if (ws.readyState === WebSocket.OPEN) return Promise.resolve(true);
+    if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+      return Promise.resolve(false);
+    }
+
+    return new Promise<boolean>((resolve) => {
+      let done = false;
+      const finish = (value: boolean) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        ws.removeEventListener("open", onOpen);
+        ws.removeEventListener("close", onClose);
+        ws.removeEventListener("error", onError);
+        resolve(value);
+      };
+      const onOpen = () => finish(true);
+      const onClose = () => finish(false);
+      const onError = () => finish(false);
+      const timer = setTimeout(() => finish(false), timeoutMs);
+
+      ws.addEventListener("open", onOpen);
+      ws.addEventListener("close", onClose);
+      ws.addEventListener("error", onError);
+    });
+  }
+
   private sendWs(obj: unknown): void {
     const json = JSON.stringify(obj);
     if (this.socket?.readyState === WebSocket.OPEN) {

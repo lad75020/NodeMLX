@@ -8,12 +8,16 @@ interface AuthUser {
 interface AuthPayload {
   authenticated?: boolean;
   user?: AuthUser;
+  token?: string;
   error?: string;
 }
+
+const WS_TOKEN_KEY = "nodemlx_ws_token";
 
 @Injectable({ providedIn: "root" })
 export class AuthService {
   readonly user = signal<AuthUser | null>(null);
+  readonly websocketToken = signal<string | null>(sessionStorage.getItem(WS_TOKEN_KEY));
   readonly loading = signal(false);
   readonly error = signal<string | null>(null);
   readonly isAuthenticated = computed(() => this.user() !== null);
@@ -26,11 +30,14 @@ export class AuthService {
       const body = (await res.json()) as AuthPayload;
       if (!res.ok || body.authenticated !== true || !body.user) {
         this.user.set(null);
+        this.setWebsocketToken(null);
         return;
       }
       this.user.set(body.user);
+      this.setWebsocketToken(body.token ?? null);
     } catch {
       this.user.set(null);
+      this.setWebsocketToken(null);
     } finally {
       this.loading.set(false);
     }
@@ -50,6 +57,7 @@ export class AuthService {
       });
     } finally {
       this.user.set(null);
+      this.setWebsocketToken(null);
       this.loading.set(false);
     }
   }
@@ -73,14 +81,23 @@ export class AuthService {
       }
 
       this.user.set(body.user);
+      this.setWebsocketToken(body.token ?? null);
       this.error.set(null);
       return true;
     } catch {
       this.user.set(null);
+      this.setWebsocketToken(null);
       this.error.set("Could not reach the server.");
       return false;
     } finally {
       this.loading.set(false);
     }
+  }
+
+  private setWebsocketToken(token: string | null): void {
+    const value = token?.trim() || null;
+    this.websocketToken.set(value);
+    if (value) sessionStorage.setItem(WS_TOKEN_KEY, value);
+    else sessionStorage.removeItem(WS_TOKEN_KEY);
   }
 }
