@@ -67,6 +67,7 @@ export class AppComponent implements OnInit, AfterViewChecked {
   protected imageHeight = 768;
   protected imageSteps = 30;
   protected imageSeed: number | null = null;
+  protected sidebarCollapsed = false;
 
   private lastImagePresetModel: string | null = null;
   private formattedTextCache = new Map<string, FormattedBlock[]>();
@@ -151,6 +152,10 @@ export class AppComponent implements OnInit, AfterViewChecked {
   protected onSelectChat(id: string): void {
     if (this.chat.currentChatId() === id) return;
     void this.chat.openChat(id);
+  }
+
+  protected toggleSidebar(): void {
+    this.sidebarCollapsed = !this.sidebarCollapsed;
   }
 
   protected async onCopyMessage(msg: { text?: string }): Promise<void> {

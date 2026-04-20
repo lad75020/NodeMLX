@@ -1,6 +1,6 @@
 <ng-container *ngIf="auth.isAuthenticated(); else authScreen">
-  <div class="app-layout">
-    <aside class="chat-sidebar">
+  <div class="app-layout" [class.sidebar-collapsed]="sidebarCollapsed">
+    <aside id="chat-sidebar" class="chat-sidebar" [attr.aria-hidden]="sidebarCollapsed">
       <div class="sidebar-header">
         <div class="sidebar-account">
           <span
@@ -45,7 +45,19 @@
     <div class="chat-shell d-flex flex-column">
       <header class="chat-header border-bottom bg-white px-3 py-2">
         <div class="d-flex align-items-center gap-3 flex-wrap">
-          <h1 class="h5 mb-0 order-1">NodeMLX Chat</h1>
+          <button
+            type="button"
+            class="sidebar-toggle-button order-0"
+            (click)="toggleSidebar()"
+            [attr.aria-expanded]="!sidebarCollapsed"
+            aria-controls="chat-sidebar"
+            [attr.aria-label]="sidebarCollapsed ? 'Show chat sidebar' : 'Hide chat sidebar'"
+            [title]="sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'"
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h11" />
+            </svg>
+          </button>
           <div class="mode-status-group order-1 me-auto">
             <app-inference-mode-toggle></app-inference-mode-toggle>
             <div
@@ -580,7 +592,7 @@
 <ng-template #authScreen>
   <main class="auth-shell">
     <section class="auth-card shadow-sm">
-      <h1 class="h4 mb-2">NodeMLX Chat</h1>
+      <h1 class="h4 mb-2">Chat with AI</h1>
       <p class="text-muted mb-3">Sign in with your invited account to continue.</p>
 
       <form (ngSubmit)="submitAuth()">

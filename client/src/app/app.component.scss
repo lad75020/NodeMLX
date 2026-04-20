@@ -21,9 +21,14 @@
 
 .app-layout {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: 260px minmax(0, 1fr);
   height: 100%;
   min-height: 0;
+  transition: grid-template-columns 0.18s ease;
+}
+
+.app-layout.sidebar-collapsed {
+  grid-template-columns: 0 minmax(0, 1fr);
 }
 
 .chat-sidebar {
@@ -32,7 +37,15 @@
   background: var(--app-surface);
   border-right: 1px solid var(--app-border);
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
+  transform: translateX(0);
+  transition: transform 0.18s ease, border-color 0.18s ease;
+}
+
+.app-layout.sidebar-collapsed .chat-sidebar {
+  border-right-color: transparent;
+  transform: translateX(-100%);
 }
 
 .sidebar-header {
@@ -147,6 +160,34 @@
   border-color: var(--app-border) !important;
 }
 
+.sidebar-toggle-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid var(--app-border);
+  border-radius: 0.45rem;
+  background: var(--app-surface);
+  color: var(--app-text);
+  cursor: pointer;
+}
+
+.sidebar-toggle-button:hover {
+  background: var(--app-sidebar-hover);
+}
+
+.sidebar-toggle-button svg {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.6;
+}
+
 .chat-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -159,10 +200,20 @@
     grid-template-rows: auto 1fr;
   }
 
+  .app-layout.sidebar-collapsed {
+    grid-template-columns: 1fr;
+    grid-template-rows: 0 1fr;
+  }
+
   .chat-sidebar {
     max-height: 35vh;
     border-right: none;
     border-bottom: 1px solid var(--app-border);
+  }
+
+  .app-layout.sidebar-collapsed .chat-sidebar {
+    border-bottom-color: transparent;
+    transform: translateX(-100%);
   }
 }
 
