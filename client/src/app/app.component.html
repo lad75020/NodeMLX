@@ -155,21 +155,56 @@
               *ngSwitchCase="'llamacpp'"
               class="llama-model-picker order-2 order-md-1"
             >
-              <button
-                type="button"
-                class="btn btn-outline-secondary btn-sm"
-                [disabled]="chat.busy() || chat.llamaModelPicking()"
-                (click)="pickLlamaModelFile()"
-              >
-                {{ chat.currentLlamaModel() ? "Change model" : "Pick model file" }}
-              </button>
-              <span
-                *ngIf="chat.currentLlamaModel() as model"
-                class="llama-model-name"
-                [title]="model.path"
-              >
-                {{ model.name }}
-              </span>
+              <label class="llama-source-option">
+                <input
+                  type="radio"
+                  name="llamaModelSource"
+                  value="disk"
+                  [checked]="chat.llamaModelSource() === 'disk'"
+                  [disabled]="chat.busy()"
+                  (change)="chat.setLlamaModelSource('disk')"
+                />
+                <span>Disk</span>
+              </label>
+              <label class="llama-source-option">
+                <input
+                  type="radio"
+                  name="llamaModelSource"
+                  value="huggingface"
+                  [checked]="chat.llamaModelSource() === 'huggingface'"
+                  [disabled]="chat.busy()"
+                  (change)="chat.setLlamaModelSource('huggingface')"
+                />
+                <span>Hugging Face</span>
+              </label>
+              <ng-container *ngIf="chat.llamaModelSource() === 'disk'; else llamaHfModel">
+                <button
+                  type="button"
+                  class="btn btn-outline-secondary btn-sm"
+                  [disabled]="chat.busy() || chat.llamaModelPicking()"
+                  (click)="pickLlamaModelFile()"
+                >
+                  {{ chat.currentLlamaModel() ? "Change model" : "Pick model file" }}
+                </button>
+                <span
+                  *ngIf="chat.currentLlamaModel() as model"
+                  class="llama-model-name"
+                  [title]="model.path"
+                >
+                  {{ model.name }}
+                </span>
+              </ng-container>
+              <ng-template #llamaHfModel>
+                <input
+                  type="text"
+                  class="form-control form-control-sm llama-hf-input"
+                  [ngModel]="chat.llamaHuggingFaceModel()"
+                  (ngModelChange)="chat.setLlamaHuggingFaceModel($event)"
+                  [disabled]="chat.busy()"
+                  placeholder="owner/model"
+                  aria-label="Hugging Face model name"
+                />
+              </ng-template>
               <span *ngIf="chat.llamaModelPicking()" class="text-muted small">Choosing…</span>
               <span *ngIf="chat.llamaModelError() as err" class="text-danger small">{{ err }}</span>
             </div>
@@ -195,7 +230,7 @@
             <ng-container *ngIf="chat.inferenceMode() === 'ollama' && chat.currentOllamaModel()">
               Ask Ollama anything to get started.
             </ng-container>
-            <ng-container *ngIf="chat.inferenceMode() === 'llamacpp' && chat.currentLlamaModel()">
+            <ng-container *ngIf="chat.inferenceMode() === 'llamacpp' && hasSelectedLlamaModel()">
               Ask Llama.cpp anything to get started.
             </ng-container>
             <ng-container *ngIf="chat.inferenceMode() === 'mlx' && chat.currentModel() && !chat.modelLoading()">
@@ -210,8 +245,8 @@
             <ng-container *ngIf="chat.inferenceMode() === 'ollama' && !chat.currentOllamaModel()">
               Pick an Ollama model above to begin.
             </ng-container>
-            <ng-container *ngIf="chat.inferenceMode() === 'llamacpp' && !chat.currentLlamaModel()">
-              Pick a Llama.cpp model file above to begin.
+            <ng-container *ngIf="chat.inferenceMode() === 'llamacpp' && !hasSelectedLlamaModel()">
+              Pick a Llama.cpp model source above to begin.
             </ng-container>
           </div>
 
@@ -252,8 +287,25 @@
               <div
                 *ngIf="msg.role === 'assistant' && msg.thinking"
                 class="thinking-bubble"
+                [class.thinking-bubble-collapsed]="isThinkingCollapsed(msg)"
               >
-                <div class="thinking-label">Thinking</div>
+                <button
+                  type="button"
+                  class="thinking-toggle"
+                  [disabled]="!canCollapseThinking(msg)"
+                  (click)="toggleThinking(msg)"
+                  [attr.aria-expanded]="!isThinkingCollapsed(msg)"
+                  title="Show or hide thinking"
+                >
+                  <span class="thinking-label">Thinking</span>
+                  <span
+                    *ngIf="canCollapseThinking(msg)"
+                    class="thinking-toggle-icon"
+                    aria-hidden="true"
+                  >
+                    {{ isThinkingCollapsed(msg) ? "▸" : "▾" }}
+                  </span>
+                </button>
                 <div class="thinking-text">{{ msg.thinking }}</div>
               </div>
               <div *ngIf="msg.text" class="bubble-text">
@@ -503,7 +555,7 @@
               [(ngModel)]="prompt"
               name="prompt"
               (keydown)="onKeydown($event)"
-              [disabled]="!chat.connected() || chat.busy() || (chat.inferenceMode() === 'mlx' && (chat.modelLoading() || !chat.currentModel())) || (chat.inferenceMode() === 'ollama' && !chat.currentOllamaModel()) || (chat.inferenceMode() === 'llamacpp' && !chat.currentLlamaModel())"
+              [disabled]="!chat.connected() || chat.busy() || (chat.inferenceMode() === 'mlx' && (chat.modelLoading() || !chat.currentModel())) || (chat.inferenceMode() === 'ollama' && !chat.currentOllamaModel()) || (chat.inferenceMode() === 'llamacpp' && !hasSelectedLlamaModel())"
               aria-label="Prompt"
             ></textarea>
             <button

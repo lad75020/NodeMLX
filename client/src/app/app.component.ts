@@ -70,6 +70,7 @@ export class AppComponent implements OnInit, AfterViewChecked {
 
   private lastImagePresetModel: string | null = null;
   private formattedTextCache = new Map<string, FormattedBlock[]>();
+  private readonly expandedThinkingIds = new Set<string>();
   private readonly modeEffect = effect(() => {
     const mode = this.chat.inferenceMode();
     const canUseImage = mode === "mlx"
@@ -268,7 +269,7 @@ export class AppComponent implements OnInit, AfterViewChecked {
       return (
         this.chat.connected() &&
         !this.chat.busy() &&
-        !!this.chat.currentLlamaModel() &&
+        this.hasSelectedLlamaModel() &&
         !!this.prompt.trim()
       );
     }
@@ -334,9 +335,9 @@ export class AppComponent implements OnInit, AfterViewChecked {
 
   protected promptPlaceholder(): string {
     if (this.chat.inferenceMode() === "llamacpp") {
-      return this.chat.currentLlamaModel()
+      return this.hasSelectedLlamaModel()
         ? "Type a prompt for Llama.cpp"
-        : "Pick a Llama.cpp model file first";
+        : "Pick a Llama.cpp model source first";
     }
     if (this.chat.inferenceMode() === "ollama") {
       if (this.usesImageGenerationControls()) return "Describe the image you want to generate with Ollama";
@@ -360,6 +361,23 @@ export class AppComponent implements OnInit, AfterViewChecked {
       : "thinking…";
   }
 
+  protected canCollapseThinking(message: ChatMessage): boolean {
+    return (
+      message.pending !== true &&
+      (message.provider === "ollama" || message.provider === "llamacpp")
+    );
+  }
+
+  protected isThinkingCollapsed(message: ChatMessage): boolean {
+    return this.canCollapseThinking(message) && !this.expandedThinkingIds.has(message.id);
+  }
+
+  protected toggleThinking(message: ChatMessage): void {
+    if (!this.canCollapseThinking(message)) return;
+    if (this.expandedThinkingIds.has(message.id)) this.expandedThinkingIds.delete(message.id);
+    else this.expandedThinkingIds.add(message.id);
+  }
+
   protected capabilityLabel(capability: string): string {
     const normalized = capability.replace(/[-_]+/g, " ").trim();
     if (!normalized) return capability;
@@ -368,6 +386,12 @@ export class AppComponent implements OnInit, AfterViewChecked {
 
   private normalizedCapability(capability: string): string {
     return capability.replace(/[-_\s]+/g, "").trim().toLowerCase();
+  }
+
+  protected hasSelectedLlamaModel(): boolean {
+    return this.chat.llamaModelSource() === "disk"
+      ? !!this.chat.currentLlamaModel()
+      : this.chat.llamaHuggingFaceModel().trim().length > 0;
   }
 
   protected normalizedMaxTokens(): number {

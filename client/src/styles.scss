@@ -170,3 +170,17 @@ body {
   line-height: 1.45;
   white-space: pre;
 }
+
+.llama-source-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--app-text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.llama-hf-input {
+  width: min(34vw, 18rem);
+}

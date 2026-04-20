@@ -459,6 +459,15 @@ async function pickLlamaModelFile() {
   return validateLlamaModelFile(stdout.trim());
 }
 
+function validateHuggingFaceModelName(value) {
+  const model = typeof value === "string" ? value.trim() : "";
+  if (!model) throw new Error("Enter a Hugging Face model name first.");
+  if (model.length > 300 || /\s/.test(model)) {
+    throw new Error("Hugging Face model name must be a single model id without whitespace.");
+  }
+  return model;
+}
+
 async function persistPromptImage(image) {
   if (!image) return null;
   if (typeof image !== "object" || typeof image.dataUrl !== "string") {
@@ -1352,7 +1361,10 @@ async function streamOllamaPrompt(socket, payload, userId) {
 async function streamLlamaPrompt(socket, payload, userId) {
   const id = payload.id ?? String(Date.now());
   const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
-  const model = await validateLlamaModelFile(payload.modelPath);
+  const modelSource = payload.modelSource === "huggingface" ? "huggingface" : "disk";
+  const model = modelSource === "huggingface"
+    ? { name: validateHuggingFaceModelName(payload.hfModel), source: "huggingface" }
+    : { ...(await validateLlamaModelFile(payload.modelPath)), source: "disk" };
   if (!prompt) throw new Error("Prompt required.");
 
   const { chatId, created } = await ensureUserChat(
@@ -1446,13 +1458,16 @@ async function streamLlamaPrompt(socket, payload, userId) {
     parseBuffer = "";
   };
 
+  const modelArgs = model.source === "huggingface"
+    ? ["-hf", model.name]
+    : ["-m", model.path];
   const child = spawn("llama-cli", [
     "--simple-io",
     "--single-turn",
     "--no-display-prompt",
     "--log-disable",
     "-n", String(maxTokens),
-    "-m", model.path,
+    ...modelArgs,
     "-p", prompt,
   ], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -1509,7 +1524,6 @@ async function streamLlamaPrompt(socket, payload, userId) {
       type: "llamaDone",
       id,
       chatId,
-      modelPath: model.path,
       modelName: model.name,
       text: fullText,
       thinking: fullThinking || undefined,

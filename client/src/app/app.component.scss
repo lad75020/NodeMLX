@@ -395,6 +395,11 @@
   white-space: normal;
 }
 
+.thinking-bubble-collapsed {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+
 .thinking-label {
   color: var(--app-thinking-label);
   font-size: 0.72rem;
@@ -404,10 +409,37 @@
   text-transform: uppercase;
 }
 
+.thinking-toggle {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0;
+  text-align: left;
+}
+
+.thinking-toggle:not(:disabled) {
+  cursor: pointer;
+}
+
+.thinking-toggle-icon {
+  color: var(--app-thinking-label);
+  font-size: 0.8rem;
+  line-height: 1;
+}
+
 .thinking-text {
   font-size: 0.88rem;
   line-height: 1.4;
   white-space: pre-wrap;
+}
+
+.thinking-bubble-collapsed .thinking-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bubble-chapter {

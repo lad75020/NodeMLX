@@ -2,6 +2,7 @@ import { Injectable, signal, computed } from "@angular/core";
 
 export type Role = "user" | "assistant";
 export type InferenceMode = "mlx" | "ollama" | "llamacpp";
+export type LlamaModelSource = "disk" | "huggingface";
 
 export interface ChatMessage {
   id: string;
@@ -90,7 +91,7 @@ type ServerEvent =
   | { type: "ollamaChunk"; id: string; text?: string; thinking?: string; images?: ChatImageAttachment[] }
   | { type: "ollamaDone"; id: string; chatId?: string | null; modelId: string; text: string; thinking?: string; images?: ChatImageAttachment[]; totalDuration?: number | null; evalCount?: number | null }
   | { type: "llamaChunk"; id: string; text?: string; thinking?: string }
-  | { type: "llamaDone"; id: string; chatId?: string | null; modelPath: string; modelName: string; text: string; thinking?: string }
+  | { type: "llamaDone"; id: string; chatId?: string | null; modelName: string; text: string; thinking?: string }
   | { type: "error"; id?: string; error: string }
   | { type: "modelLoading"; modelId: string | null }
   | { type: "modelReady";   modelId: string; isVLM?: boolean; canGenerateImages?: boolean }
@@ -126,6 +127,8 @@ export class ChatService {
   readonly ollamaCapabilitiesError   = signal<string | null>(null);
   readonly ollamaUrl           = signal<string | null>(null);
   readonly currentLlamaModel   = signal<LlamaModelFile | null>(null);
+  readonly llamaModelSource    = signal<LlamaModelSource>("disk");
+  readonly llamaHuggingFaceModel = signal("");
   readonly llamaModelPicking   = signal(false);
   readonly llamaModelError     = signal<string | null>(null);
 
@@ -236,6 +239,17 @@ export class ChatService {
 
   cancelInference(): void {
     this.sendWs({ type: "cancelInference" });
+  }
+
+  setLlamaModelSource(source: LlamaModelSource): void {
+    if (this.busy()) return;
+    this.llamaModelSource.set(source);
+    this.llamaModelError.set(null);
+  }
+
+  setLlamaHuggingFaceModel(value: string): void {
+    this.llamaHuggingFaceModel.set(value);
+    if (this.llamaModelError()) this.llamaModelError.set(null);
   }
 
   // ── WS-backed data loaders ────────────────────────────────────────
@@ -440,21 +454,26 @@ export class ChatService {
 
   private sendLlama(prompt: string, options: ChatGenerationOptions = {}): void {
     const text = prompt.trim();
-    const model = this.currentLlamaModel();
-    if (!text || this.busy() || !model) return;
+    const source = this.llamaModelSource();
+    const diskModel = this.currentLlamaModel();
+    const hfModel = this.llamaHuggingFaceModel().trim();
+    const modelName = source === "disk" ? diskModel?.name : hfModel;
+    if (!text || this.busy() || !modelName || (source === "disk" && !diskModel)) return;
 
     const id = crypto.randomUUID();
     this.messages.update((list) => [
       ...list,
       { id, role: "user", text, provider: "llamacpp" },
-      { id: `${id}:reply`, role: "assistant", text: "", pending: true, modelId: model.name, provider: "llamacpp" },
+      { id: `${id}:reply`, role: "assistant", text: "", pending: true, modelId: modelName, provider: "llamacpp" },
     ]);
     this.busy.set(true);
     this.sendWs({
       type: "llamaPrompt",
       id,
       chatId: this.currentChatId(),
-      modelPath: model.path,
+      modelSource: source,
+      modelPath: diskModel?.path,
+      hfModel,
       prompt: text,
       maxTokens: options.maxTokens,
     });
@@ -831,6 +850,8 @@ export class ChatService {
     this.ollamaDetailsRequestSeq += 1;
     this.ollamaUrl.set(null);
     this.currentLlamaModel.set(null);
+    this.llamaModelSource.set("disk");
+    this.llamaHuggingFaceModel.set("");
     this.llamaModelPicking.set(false);
     this.llamaModelError.set(null);
     this.gpuUsage.set(null);
