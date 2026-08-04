@@ -1,81 +1,101 @@
 # NodeMLX Chat
 
-A single-page chat app: Fastify + `node-mlx` backend, Angular 18 + Bootstrap frontend,
-communicating over WebSockets. Runs on macOS 14+ / Apple Silicon.
+NodeMLX Chat is a macOS Apple Silicon chat application with a Fastify `node-mlx` backend, invite-only user onboarding, and an Angular 18 + Bootstrap frontend.
 
-## Layout
+## Highlights
 
-- `server.js` — Fastify server with `/ws` WebSocket and static Angular hosting.
-- `client/` — Angular SPA (standalone components, Bootstrap).
+- Fastify backend serving REST APIs, `/ws` WebSocket chat streaming, and the built Angular client.
+- `node-mlx` model worker with Hugging Face model discovery, recommended model defaults, saved/failed model registry, and image input support.
+- SQLite database `mlx-chat.db` for users, sessions, saved models, failed models, and app secrets.
+- Invite-only local user creation through `scripts/onboard-user.js`.
+- Angular 18 standalone frontend in `client/`, with dev-server proxying to the backend.
+- OpenAPI JSON, browser docs, and a human-readable API guide in `docs/API.md`.
+- Optional native macOS SwiftUI shell under `NativeMac/`.
 
-## Setup
+## Repository layout
+
+```text
+.
+├── server.js                 # Fastify app, auth, WebSocket, model registry, APIs
+├── model-worker.js           # MLX generation worker
+├── package.json              # Backend and build scripts
+├── mlx-chat.db               # Local SQLite runtime database
+├── scripts/onboard-user.js   # Invite-only user creation
+├── client/                   # Angular frontend
+│   ├── package.json
+│   └── proxy.conf.json
+├── docs/API.md               # HTTP/WebSocket protocol guide
+├── NativeMac/                # Optional SwiftUI native client shell
+├── utils/                    # Local utilities such as GPU usage helper
+└── README.md
+```
+
+## Prerequisites
+
+- macOS 14 or newer on Apple Silicon; `node-mlx` exits on unsupported platforms.
+- Node.js and npm.
+- Internet access for first-time Hugging Face model downloads unless models are already cached.
+- Enough RAM and disk space for the selected MLX model.
+- Optional Angular CLI through the client dependencies for frontend development.
+
+## Installation and setup
+
+Install backend dependencies and build the frontend:
 
 ```bash
-# one-time: install backend + build frontend
+npm run setup
+```
+
+Equivalent manual steps:
+
+```bash
 npm install
 npm run build
 ```
 
-## Run (production mode: backend serves built Angular)
+Create an invited user:
+
+```bash
+npm run user:add -- <username>
+```
+
+Provide a password non-interactively when needed:
+
+```bash
+npm run user:add -- <username> --password '<strong-password>'
+```
+
+## Running
+
+Production-style backend serving the built Angular app:
 
 ```bash
 npm start
 # open http://127.0.0.1:3000
 ```
 
-## Run (dev mode: Angular dev server with live reload)
-
-Terminal 1:
+Development mode with backend watch and Angular live reload:
 
 ```bash
-npm run dev         # Fastify on :3000
+npm run dev
 ```
 
-Terminal 2:
+In a second terminal:
 
 ```bash
-npm run client:dev  # ng serve on :4200 (proxies /ws + /api to :3000)
+npm run client:dev
 # open http://127.0.0.1:4200
 ```
 
-## Configuration
+## Testing and checks
 
-- `PORT` (default `3000`), `HOST` (default `127.0.0.1`).
-- `MLX_MODEL` — any HuggingFace ID or key from `RECOMMENDED_MODELS`
-  (default: `qwen-3-1.7b`). First run downloads the weights.
+No automated test script is declared in the root or client `package.json`. Use `npm run build` as the main compile check, then smoke-test login, model selection, and WebSocket chat from the browser.
 
-## Invite-Only User Onboarding
+## Configuration and security notes
 
-Create users from the command line (writes into `mlx-chat.db`):
-
-```bash
-npm run user:add -- <username>
-```
-
-Or provide password non-interactively:
-
-```bash
-npm run user:add -- <username> --password '<strong-password>'
-```
-
-Optional database path:
-
-```bash
-npm run user:add -- <username> --db /path/to/mlx-chat.db
-```
-
-## Wire protocol
-
-Client → server: `{ "type": "prompt", "id": "...", "prompt": "..." }`
-Server → client: `{ "type": "start" | "response" | "error", ... }`
-
-## Backend API Documentation
-
-- OpenAPI JSON: `GET /api/openapi.json`
-- Browser docs: `GET /api/docs`
-- Human-readable protocol guide: [`docs/API.md`](docs/API.md)
-
-The current Angular frontend still uses the existing `/ws` WebSocket protocol.
-Other frontends should authenticate with the HTTP auth endpoints, preserve the
-`nodemlx_session` cookie for HTTP requests, then connect to `/ws?token=<jwt>`
-using the JWT returned by login or session restore.
+- `PORT` defaults to `3000`; `HOST` defaults to `127.0.0.1`.
+- `MLX_MODEL` can be set to any supported Hugging Face model ID or a key from `node-mlx` `RECOMMENDED_MODELS`; default is `qwen-3-1.7b`.
+- `HF_HOME` defaults to `~/.cache/huggingface` if unset.
+- `MLX_MAX_TOKENS` and `MLX_MAX_TOKENS_LIMIT` control generation limits.
+- `JWT_SECRET` can be supplied; otherwise a secret is generated and stored in SQLite.
+- Protect `mlx-chat.db`, logs, uploaded image temp files, and session cookies. Do not expose the server beyond trusted networks without TLS and access controls.

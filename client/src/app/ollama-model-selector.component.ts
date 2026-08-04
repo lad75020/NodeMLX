@@ -9,17 +9,16 @@ import {
   inject,
   signal,
 } from "@angular/core";
-import { CommonModule } from "@angular/common";
+
 import { FormsModule } from "@angular/forms";
 import { ChatService, OllamaModel } from "./chat.service";
 
 @Component({
-  selector: "app-ollama-model-selector",
-  standalone: true,
-  imports: [CommonModule, FormsModule],
-  changeDetection: ChangeDetectionStrategy.OnPush,
-  templateUrl: "./ollama-model-selector.component.html",
-  styleUrl: "./ollama-model-selector.component.scss",
+    selector: "app-ollama-model-selector",
+    imports: [FormsModule],
+    changeDetection: ChangeDetectionStrategy.OnPush,
+    templateUrl: "./ollama-model-selector.component.html",
+    styleUrl: "./ollama-model-selector.component.scss"
 })
 export class OllamaModelSelectorComponent implements OnInit {
   protected readonly chat = inject(ChatService);

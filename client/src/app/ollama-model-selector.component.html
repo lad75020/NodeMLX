@@ -1,12 +1,13 @@
 <div class="model-selector position-relative">
   <label class="form-label small text-muted mb-1" for="ollama-model-input">
     Ollama Model
-    <span
-      *ngIf="chat.ollamaModelsLoading()"
-      class="spinner-border spinner-border-sm ms-1"
-      role="status"
-      aria-hidden="true"
-    ></span>
+    @if (chat.ollamaModelsLoading()) {
+      <span
+        class="spinner-border spinner-border-sm ms-1"
+        role="status"
+        aria-hidden="true"
+      ></span>
+    }
   </label>
 
   <div class="input-group input-group-sm">
@@ -24,14 +25,14 @@
       (keydown)="onKey($event)"
       [disabled]="chat.busy() || !chat.connected()"
       aria-label="Search Ollama models"
-    />
+      />
     <button
       type="button"
       class="btn btn-outline-secondary"
       title="Use typed Ollama model"
       (click)="selectTypedModel()"
       [disabled]="!typedModelId() || chat.busy() || !chat.connected()"
-    >
+      >
       Use
     </button>
     <button
@@ -40,48 +41,54 @@
       title="Refresh Ollama model list"
       (click)="refresh()"
       [disabled]="chat.ollamaModelsLoading()"
-    >
-      <span
-        *ngIf="chat.ollamaModelsLoading()"
-        class="spinner-border spinner-border-sm"
-        role="status"
-      ></span>
-      <span *ngIf="!chat.ollamaModelsLoading()">R</span>
+      >
+      @if (chat.ollamaModelsLoading()) {
+        <span
+          class="spinner-border spinner-border-sm"
+          role="status"
+        ></span>
+      }
+      @if (!chat.ollamaModelsLoading()) {
+        <span>R</span>
+      }
     </button>
   </div>
 
-  <div
-    *ngIf="chat.ollamaModelsError() as err"
-    class="model-error-hint small text-danger mt-1"
-  >
-    {{ err }}
-  </div>
-
-  <div
-    *ngIf="open() && !chat.ollamaModelsLoading()"
-    class="dropdown-panel shadow border rounded bg-white"
-    role="listbox"
-  >
+  @if (chat.ollamaModelsError(); as err) {
     <div
-      *ngIf="!chat.ollamaModelsError() && filtered().length === 0"
-      class="p-2 small text-muted"
-    >
-      No local Ollama models. Type a model name or run <code>ollama pull</code>.
+      class="model-error-hint small text-danger mt-1"
+      >
+      {{ err }}
     </div>
+  }
 
-    <button
-      type="button"
-      *ngFor="let m of filtered(); let i = index; trackBy: trackById"
-      class="dropdown-item d-flex justify-content-between align-items-center"
-      [class.active]="i === highlighted()"
-      [class.is-current]="m.id === chat.currentOllamaModel()"
-      [title]="m.id"
-      (click)="select(m)"
-      (mouseenter)="highlighted.set(i)"
-      role="option"
-    >
-      <span class="text-truncate me-2">{{ shorten(m.id) }}</span>
-      <small class="text-muted flex-shrink-0">{{ sizeLabel(m.size) }}</small>
-    </button>
-  </div>
+  @if (open() && !chat.ollamaModelsLoading()) {
+    <div
+      class="dropdown-panel shadow border rounded bg-white"
+      role="listbox"
+      >
+      @if (!chat.ollamaModelsError() && filtered().length === 0) {
+        <div
+          class="p-2 small text-muted"
+          >
+          No local Ollama models. Type a model name or run <code>ollama pull</code>.
+        </div>
+      }
+      @for (m of filtered(); track trackById(i, m); let i = $index) {
+        <button
+          type="button"
+          class="dropdown-item d-flex justify-content-between align-items-center"
+          [class.active]="i === highlighted()"
+          [class.is-current]="m.id === chat.currentOllamaModel()"
+          [title]="m.id"
+          (click)="select(m)"
+          (mouseenter)="highlighted.set(i)"
+          role="option"
+          >
+          <span class="text-truncate me-2">{{ shorten(m.id) }}</span>
+          <small class="text-muted flex-shrink-0">{{ sizeLabel(m.size) }}</small>
+        </button>
+      }
+    </div>
+  }
 </div>

@@ -6,6 +6,7 @@ import {
   OnInit,
   ViewChild,
   inject,
+  ChangeDetectionStrategy
 } from "@angular/core";
 import { CommonModule } from "@angular/common";
 import { FormsModule } from "@angular/forms";
@@ -42,17 +43,17 @@ type FormattedBlock =
   | { kind: "code"; code: string; language: string | null };
 
 @Component({
-  selector: "app-root",
-  standalone: true,
-  imports: [
-    CommonModule,
-    FormsModule,
-    ModelSelectorComponent,
-    OllamaModelSelectorComponent,
-    InferenceModeToggleComponent,
-  ],
-  templateUrl: "./app.component.html",
-  styleUrl: "./app.component.scss",
+    selector: "app-root",
+    imports: [
+        CommonModule,
+        FormsModule,
+        ModelSelectorComponent,
+        OllamaModelSelectorComponent,
+        InferenceModeToggleComponent,
+    ],
+    templateUrl: "./app.component.html",
+    changeDetection: ChangeDetectionStrategy.Eager,
+    styleUrl: "./app.component.scss"
 })
 export class AppComponent implements OnInit, AfterViewChecked {
   protected readonly auth = inject(AuthService);

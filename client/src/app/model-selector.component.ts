@@ -14,12 +14,11 @@ import { FormsModule } from "@angular/forms";
 import { ChatService, HFModel } from "./chat.service";
 
 @Component({
-  selector: "app-model-selector",
-  standalone: true,
-  imports: [CommonModule, FormsModule],
-  changeDetection: ChangeDetectionStrategy.OnPush,
-  templateUrl: "./model-selector.component.html",
-  styleUrl: "./model-selector.component.scss",
+    selector: "app-model-selector",
+    imports: [CommonModule, FormsModule],
+    changeDetection: ChangeDetectionStrategy.OnPush,
+    templateUrl: "./model-selector.component.html",
+    styleUrl: "./model-selector.component.scss"
 })
 export class ModelSelectorComponent implements OnInit {
   protected readonly chat = inject(ChatService);
