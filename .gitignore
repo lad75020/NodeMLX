@@ -14,3 +14,6 @@ __pycache__/
 
 # Temp image dirs (created at runtime)
 /tmp/nodemlx-*
+.codebase-memory/artifact.json
+.codebase-memory/graph.db.zst
+package-lock.json
