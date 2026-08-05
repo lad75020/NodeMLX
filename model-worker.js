@@ -24,6 +24,13 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { loadModel } from "node-mlx";
+import { resolveDiffusionKitPython } from "./src/inference/diffusionkit-runtime.js";
+import { resolveZImagePython } from "./src/inference/z-image-runtime.js";
+import {
+  buildMlxVlmGenerateArgs,
+  isMlxVlmModel,
+  resolveMlxVlmPython,
+} from "./src/inference/mlx-vlm.js";
 
 // Inherit from parent (server.js sets this before fork), but guard here too
 // so the worker is correct even if run standalone.
@@ -37,12 +44,28 @@ let currentMode = "llm";
 const activeChildren = new Set();
 
 const IMAGE_OUTPUT_DIR = join(tmpdir(), "nodemlx-generated-images");
-const DIFFUSIONKIT_COMPAT_CLI = join(process.cwd(), "scripts", "diffusionkit_cli_compat.py");
+const DIFFUSIONKIT_COMPAT_CLI = join(
+  process.cwd(),
+  "scripts",
+  "diffusionkit_cli_compat.py",
+);
 const Z_IMAGE_CLI = join(process.cwd(), "scripts", "z_image_cli.py");
+const DIFFUSIONKIT_PYTHON = resolveDiffusionKitPython(
+  process.env.DIFFUSIONKIT_PYTHON,
+);
+const Z_IMAGE_PYTHON = resolveZImagePython(
+  process.env.Z_IMAGE_PYTHON,
+  process.cwd(),
+  DIFFUSIONKIT_PYTHON,
+);
+const MLX_VLM_PYTHON = resolveMlxVlmPython(process.env.MLX_VLM_PYTHON);
 
 function isImageGenerationModel(modelId) {
-  return /(^|\/)(mlx-)?(stable-diffusion|sd3|sdxl|flux|z-image|diffusion|text-to-image)/i.test(modelId)
-    || /diffusionkit/i.test(modelId);
+  return (
+    /(^|\/)(mlx-)?(stable-diffusion|sd3|sdxl|flux|z-image|diffusion|text-to-image)/i.test(
+      modelId,
+    ) || /diffusionkit/i.test(modelId)
+  );
 }
 
 function isZImageModel(modelId) {
@@ -55,8 +78,10 @@ function isZImageModel(modelId) {
 // gibberish.  Wrap the prompt manually here — *only* for phi-4 — so other
 // models keep receiving raw prompts as before.
 function isPhi4Model(modelId) {
-  return /(^|\/)(mlx-)?phi-?4(?:-|$)/i.test(modelId)
-      && !/phi-?4-?(?:mm|multimodal)/i.test(modelId);
+  return (
+    /(^|\/)(mlx-)?phi-?4(?:-|$)/i.test(modelId) &&
+    !/phi-?4-?(?:mm|multimodal)/i.test(modelId)
+  );
 }
 
 function formatPromptForModel(prompt, modelId) {
@@ -96,8 +121,12 @@ function runCommand(command, args) {
     activeChildren.add(child);
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
-    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
     child.on("error", (err) => {
       activeChildren.delete(child);
       reject(err);
@@ -105,18 +134,53 @@ function runCommand(command, args) {
     child.on("close", (code) => {
       activeChildren.delete(child);
       if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(`${command} exited with code ${code}\n${stderr || stdout}`.trim()));
+      else
+        reject(
+          new Error(
+            `${command} exited with code ${code}\n${stderr || stdout}`.trim(),
+          ),
+        );
     });
   });
 }
 
 function stopActiveChildren(signal = "SIGTERM") {
   for (const child of activeChildren) {
-    try { child.kill(signal); } catch {}
+    try {
+      child.kill(signal);
+    } catch {}
   }
   if (signal === "SIGKILL") {
     activeChildren.clear();
   }
+}
+
+async function ensureMlxVlmRuntime() {
+  try {
+    await runCommand(MLX_VLM_PYTHON, ["-c", "import mlx_vlm"]);
+  } catch {
+    throw new Error(
+      "Qwen3.5 requires the MLX-VLM runtime, not node-mlx. " +
+        "Install it with `python3 -m pip install -U mlx-vlm`, or set " +
+        "MLX_VLM_PYTHON to its Python executable or Conda environment directory.",
+    );
+  }
+}
+
+async function generateWithMlxVlm(prompt, modelId, options, imagePath) {
+  const { stdout } = await runCommand(
+    MLX_VLM_PYTHON,
+    buildMlxVlmGenerateArgs({ modelId, prompt, imagePath, options }),
+  );
+
+  return {
+    // mlx-vlm writes only generated text to stdout when --no-verbose is set.
+    text: stdout.trimEnd(),
+    images: [],
+    // Its stable CLI does not emit machine-readable generation statistics.
+    tokenCount: 0,
+    tokensPerSecond: 0,
+  };
 }
 
 process.on("SIGTERM", () => {
@@ -136,48 +200,75 @@ async function generateImage(prompt, modelId, options = {}) {
   const height = clampImageDimension(options.imageHeight, preset.height);
   const steps = clampInteger(options.steps, 1, 150, preset.steps);
   const cfg = Number.isFinite(options.cfg) ? options.cfg : 7;
-  const seed = clampInteger(options.seed, 0, 2 ** 31 - 1, Math.floor(Math.random() * 2 ** 31));
+  const seed = clampInteger(
+    options.seed,
+    0,
+    2 ** 31 - 1,
+    Math.floor(Math.random() * 2 ** 31),
+  );
 
   try {
     if (isZImage) {
-      await runCommand(process.env.Z_IMAGE_PYTHON ?? process.env.DIFFUSIONKIT_PYTHON ?? "python3", [
-        Z_IMAGE_CLI,
-        "--prompt", prompt,
-        "--model-id", modelId,
-        "--height", String(height),
-        "--width", String(width),
-        "--seed", String(seed),
-        "--steps", String(steps),
-        "--output-path", outputPath,
-      ]);
+      await runCommand(
+        Z_IMAGE_PYTHON,
+        [
+          Z_IMAGE_CLI,
+          "--prompt",
+          prompt,
+          "--model-id",
+          modelId,
+          "--height",
+          String(height),
+          "--width",
+          String(width),
+          "--seed",
+          String(seed),
+          "--steps",
+          String(steps),
+          "--output-path",
+          outputPath,
+        ],
+      );
     } else {
-      await runCommand(process.env.DIFFUSIONKIT_PYTHON ?? "python3", [
+      await runCommand(DIFFUSIONKIT_PYTHON, [
         DIFFUSIONKIT_COMPAT_CLI,
-        "--prompt", prompt,
-        "--model-version", modelId,
-        "--height", String(height),
-        "--width", String(width),
-        "--seed", String(seed),
-        "--steps", String(steps),
-        "--cfg", String(cfg),
-        "--output-path", outputPath,
+        "--prompt",
+        prompt,
+        "--model-version",
+        modelId,
+        "--height",
+        String(height),
+        "--width",
+        String(width),
+        "--seed",
+        String(seed),
+        "--steps",
+        String(steps),
+        "--cfg",
+        String(cfg),
+        "--output-path",
+        outputPath,
       ]);
     }
     const bytes = await readFile(outputPath);
     return {
       text: "",
-      images: [{
-        dataUrl: `data:image/png;base64,${bytes.toString("base64")}`,
-        name: `generated-${seed}.png`,
-        type: "image/png",
-        size: bytes.byteLength,
-      }],
+      images: [
+        {
+          dataUrl: `data:image/png;base64,${bytes.toString("base64")}`,
+          name: `generated-${seed}.png`,
+          type: "image/png",
+          size: bytes.byteLength,
+        },
+      ],
       tokenCount: 0,
       tokensPerSecond: 0,
     };
   } catch (err) {
     if (err?.code === "ENOENT") {
-      throw new Error("DiffusionKit was not found. Install it with `pip install diffusionkit` to run DiffusionKit MLX image-generation models.");
+      throw new Error(
+        "DiffusionKit was not found. Install it with `pip install diffusionkit` to run DiffusionKit MLX image-generation models.",
+      );
     }
     throw err;
   } finally {
@@ -189,11 +280,17 @@ process.on("message", async (msg) => {
   switch (msg.type) {
     case "loadModel": {
       if (model) {
-        try { model.unload(); } catch {}
-        model = null;
-        currentModelId = null;
+        try {
+          model.unload();
+        } catch {}
       }
-      currentMode = isImageGenerationModel(msg.modelId) ? "image-generation" : "llm";
+      model = null;
+      currentModelId = null;
+      currentMode = isImageGenerationModel(msg.modelId)
+        ? "image-generation"
+        : isMlxVlmModel(msg.modelId)
+          ? "mlx-vlm"
+          : "llm";
       try {
         if (currentMode === "image-generation") {
           currentModelId = msg.modelId;
@@ -202,6 +299,18 @@ process.on("message", async (msg) => {
             modelId: msg.modelId,
             isVLM: false,
             canGenerateImages: true,
+          });
+          break;
+        }
+
+        if (currentMode === "mlx-vlm") {
+          await ensureMlxVlmRuntime();
+          currentModelId = msg.modelId;
+          process.send({
+            type: "modelReady",
+            modelId: msg.modelId,
+            isVLM: true,
+            canGenerateImages: false,
           });
           break;
         }
@@ -225,21 +334,52 @@ process.on("message", async (msg) => {
     }
 
     case "generate": {
-      if (currentMode !== "image-generation" && !model) {
-        process.send({ type: "generateError", id: msg.id, error: "No model loaded." });
+      if (currentMode === "llm" && !model) {
+        process.send({
+          type: "generateError",
+          id: msg.id,
+          error: "No model loaded.",
+        });
+        return;
+      }
+      if (currentMode === "mlx-vlm" && !currentModelId) {
+        process.send({
+          type: "generateError",
+          id: msg.id,
+          error: "No MLX-VLM model selected.",
+        });
         return;
       }
       if (currentMode === "image-generation" && !currentModelId) {
-        process.send({ type: "generateError", id: msg.id, error: "No image-generation model selected." });
+        process.send({
+          type: "generateError",
+          id: msg.id,
+          error: "No image-generation model selected.",
+        });
         return;
       }
       try {
-        const formattedPrompt = formatPromptForModel(msg.prompt, currentModelId);
-        const result = currentMode === "image-generation"
-          ? await generateImage(msg.prompt, currentModelId, msg.options ?? {})
-          : (msg.imagePath
-              ? model.generateWithImage(formattedPrompt, msg.imagePath, msg.options ?? {})
-              : model.generate(formattedPrompt, msg.options ?? {}));
+        const formattedPrompt = formatPromptForModel(
+          msg.prompt,
+          currentModelId,
+        );
+        const result =
+          currentMode === "image-generation"
+            ? await generateImage(msg.prompt, currentModelId, msg.options ?? {})
+            : currentMode === "mlx-vlm"
+              ? await generateWithMlxVlm(
+                  formattedPrompt,
+                  currentModelId,
+                  msg.options ?? {},
+                  msg.imagePath,
+                )
+              : msg.imagePath
+                ? model.generateWithImage(
+                    formattedPrompt,
+                    msg.imagePath,
+                    msg.options ?? {},
+                  )
+                : model.generate(formattedPrompt, msg.options ?? {});
         process.send({
           type: "generateResult",
           id: msg.id,
@@ -260,7 +400,11 @@ process.on("message", async (msg) => {
     }
 
     case "exit": {
-      if (model) { try { model.unload(); } catch {} }
+      if (model) {
+        try {
+          model.unload();
+        } catch {}
+      }
       process.exit(0);
       break;
     }

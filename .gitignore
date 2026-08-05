@@ -1,5 +1,7 @@
 node_modules/
 client/node_modules/
+.venv/
+.z-image-venv/
 client/dist/
 client/.angular/
 node-mlx/
