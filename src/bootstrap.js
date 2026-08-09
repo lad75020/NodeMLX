@@ -33,6 +33,14 @@ const WORKER_PATH = join(PROJECT_ROOT, "model-worker.js");
 const GPU_USAGE_PATH = join(PROJECT_ROOT, "utils", "GPUUsage");
 
 const config = createConfig(RECOMMENDED_MODELS);
+for (const warning of config.warnings) {
+  console.warn(`Configuration warning: ${warning}`);
+}
+for (const readiness of Object.values(config.optionalCapabilities)) {
+  if (readiness.state === "unavailable") {
+    console.warn(`Optional capability unavailable: ${readiness.diagnostic}`);
+  }
+}
 const {
   defaultModel: DEFAULT_MODEL,
   port: PORT,

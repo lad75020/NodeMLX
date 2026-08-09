@@ -1,6 +1,6 @@
 # NodeMLX Chat
 
-NodeMLX Chat is a macOS Apple Silicon chat application with a Fastify `node-mlx` backend, invite-only user onboarding, and an Angular 18 + Bootstrap frontend.
+NodeMLX Chat is a macOS Apple Silicon chat application with a Fastify `node-mlx` backend, invite-only user onboarding, and an Angular 22 Bootstrap frontend.
 
 ## Highlights
 
@@ -134,9 +134,21 @@ Then smoke-test login, model selection, WebSocket chat, and image generation fro
 
 ## Configuration and security notes
 
-- `PORT` defaults to `3000`; `HOST` defaults to `127.0.0.1`.
-- `MLX_MODEL` can be set to any supported Hugging Face model ID or a key from `node-mlx` `RECOMMENDED_MODELS`; default is `qwen-3-1.7b`.
-- `HF_HOME` defaults to `~/.cache/huggingface` if unset.
-- `MLX_MAX_TOKENS` and `MLX_MAX_TOKENS_LIMIT` control generation limits.
+NodeMLX validates its startup configuration before it creates the Fastify server. It binds to localhost by default; do not expose it to an untrusted network without adding appropriate TLS and access controls.
+
+| Setting | Default / accepted value | Startup behavior |
+| --- | --- | --- |
+| `PORT` | `18956`; whole number `1`–`65535` | Missing or malformed/out-of-range values stop startup with a setting-specific correction. |
+| `HOST` | `127.0.0.1`; non-empty host name or IP address | Missing uses the local-only default. An empty value stops startup. Setting a non-local host is an explicit operator choice. |
+| `MLX_MODEL` | `qwen-3-1.7b` recommended model | May be a supported Hugging Face model ID or key from `node-mlx` `RECOMMENDED_MODELS`. |
+| `HF_HOME` | `~/.cache/huggingface` | Set before application startup so the model worker inherits the selected cache location. |
+| `MLX_MAX_TOKENS_LIMIT` | `32768`; whole number `1`–`131072` | A missing or malformed value stops startup. A finite value outside the range is clamped to the nearest bound and reported as a warning. |
+| `MLX_MAX_TOKENS` | `4096`; whole number `1`–`MLX_MAX_TOKENS_LIMIT` | Same validation and clamping behavior as `MLX_MAX_TOKENS_LIMIT`. |
+| `DIFFUSIONKIT_PYTHON` | Optional interpreter path or environment directory | When explicitly configured but unavailable, DiffusionKit image generation is reported unavailable; core chat still starts. |
+| `Z_IMAGE_PYTHON` | Optional interpreter path or environment directory | When explicitly configured but unavailable, MLX z-image generation is reported unavailable; core chat still starts. |
+| `MLX_Z_IMAGE_DIR`, `MLX_Z_IMAGE_MODEL_DIR`, `MLX_Z_IMAGE_CACHE_DIR` | Optional z-image source/model/cache locations | Passed to the z-image adapter without substitution. Keep these locations separate from the DiffusionKit environment. |
+
+NodeMLX never installs missing runtimes or replaces an explicitly configured runtime with an unrelated one. To restore an unavailable optional image capability, install its documented dependencies in the corresponding separate environment and correct the named setting before restarting.
+
 - `JWT_SECRET` can be supplied; otherwise a secret is generated and stored in SQLite.
 - Protect `mlx-chat.db`, logs, uploaded image temp files, and session cookies. Do not expose the server beyond trusted networks without TLS and access controls.
