@@ -22,6 +22,7 @@ test("createConfig returns documented local-safe defaults", () => {
   assert.equal(config.host, "127.0.0.1");
   assert.equal(config.maxGenerationTokens, 32768);
   assert.equal(config.defaultMaxTokens, 4096);
+  assert.equal(config.sessionTtlMs, 7 * 24 * 60 * 60 * 1000);
   assert.deepEqual(config.warnings, []);
 });
 

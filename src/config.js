@@ -165,7 +165,7 @@ export function createConfig(recommendedModels, env = process.env, { pathExists 
     maxLlamaModelBytes: 16_000_000_000,
     maxLlamaOutputChars: 2_000_000,
     sessionCookieName: "nodemlx_session",
-    sessionTtlMs: 30 * 24 * 60 * 60 * 1000,
+    sessionTtlMs: 7 * 24 * 60 * 60 * 1000,
     minUsernameLength: 3,
     maxUsernameLength: 40,
     minPasswordLength: 8,

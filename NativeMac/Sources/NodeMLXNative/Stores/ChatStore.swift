@@ -54,7 +54,7 @@ final class ChatStore: ObservableObject {
     }
 
     var isAuthenticated: Bool {
-        user != nil || websocketToken != nil
+        user != nil
     }
 
     func saveServerURL() {
@@ -68,17 +68,11 @@ final class ChatStore: ObservableObject {
         authError = nil
         defer { authLoading = false }
 
-        if let token = websocketToken, !token.isEmpty {
-            connectSocket(token: token)
-            await loadInitialData()
-            return
-        }
-
         do {
             let response = try await AuthClient(serverURL: serverURL).restoreSession()
             guard response.authenticated == true, let token = response.token else {
                 user = nil
-                websocketToken = nil
+                setToken(nil)
                 return
             }
             user = response.user
@@ -87,7 +81,7 @@ final class ChatStore: ObservableObject {
             await loadInitialData()
         } catch {
             user = nil
-            websocketToken = nil
+            setToken(nil)
         }
     }
 

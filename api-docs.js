@@ -14,7 +14,7 @@ export function createOpenApiDocument({
     title: "NodeMLX Chat Backend API",
     version: "1.0.0",
     description: [
-      "HTTP endpoints use cookie-based sessions.",
+      "HTTP endpoints use rolling seven-day cookie-based sessions.",
       "Interactive model operations use the existing `/ws` WebSocket JSON protocol.",
       "The WebSocket protocol is documented here with message schemas; existing frontend messages are unchanged.",
     ].join("\n"),
@@ -63,7 +63,7 @@ export function createOpenApiDocument({
         operationId: "getCurrentUser",
         responses: {
           "200": {
-            description: "Authentication status.",
+            description: "Authentication status. A valid cookie-backed session is renewed for seven days and the response refreshes the HTTP-only cookie.",
             content: {
               "application/json": {
                 schema: { $ref: "#/components/schemas/AuthMeResponse" },
@@ -78,7 +78,7 @@ export function createOpenApiDocument({
         tags: ["Auth"],
         summary: "Registration placeholder",
         operationId: "registerUser",
-        description: "Registration is intentionally disabled; users are created with `npm run user:add`.",
+        description: "Registration is intentionally disabled; users are created with `npm run user:add` and local administrators reset passwords with `npm run user:reset`.",
         responses: {
           "403": {
             description: "Registration disabled.",
@@ -106,7 +106,7 @@ export function createOpenApiDocument({
         },
         responses: {
           "200": {
-            description: "Login succeeded. A `nodemlx_session` HTTP-only cookie and WebSocket JWT are issued.",
+            description: "Login succeeded. A rolling seven-day `nodemlx_session` HTTP-only cookie and WebSocket JWT are issued.",
             headers: {
               "Set-Cookie": {
                 schema: { type: "string" },
@@ -124,7 +124,7 @@ export function createOpenApiDocument({
             content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
           },
           "401": {
-            description: "Invalid credentials.",
+            description: "Generic invalid-credentials response; it does not disclose whether the username exists.",
             content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
           },
         },
@@ -154,7 +154,7 @@ export function createOpenApiDocument({
         operationId: "connectWebSocket",
         description: [
           "Upgrade this endpoint to a WebSocket after authenticating with `/api/auth/login`.",
-          "Pass the returned JWT as `/ws?token=<jwt>`.",
+          "Pass the returned JWT as `/ws?token=<jwt>`; each operation rechecks the rolling SQLite session.",
           "Messages are JSON objects with a `type` discriminator.",
           "RPC-style messages include a client-generated `requestId` and receive an `rpcResult` event.",
           "Generation messages stream server events such as `start`, `queued`, `response`, `ollamaChunk`, `ollamaDone`, `llamaChunk`, `llamaDone`, and `error`.",
@@ -204,7 +204,7 @@ export function createOpenApiDocument({
         type: "apiKey",
         in: "query",
         name: "token",
-        description: "JWT returned by `/api/auth/login` or `/api/auth/me`; the JWT subject is validated against the SQLite session table.",
+        description: "JWT returned by `/api/auth/login` or `/api/auth/me`; the JWT subject is validated against the rolling SQLite session table.",
       },
     },
     schemas: {

@@ -77,6 +77,7 @@ const {
   readSessionUser,
   createSessionJwt,
   verifySessionJwt,
+  readSessionUserById,
   websocketTokenFromRequest,
   sessionCookieValue,
   setSessionCookie,
@@ -263,6 +264,7 @@ fastify.get("/api/auth/me", async (request, reply) => {
     clearSessionCookie(reply, request);
     return { authenticated: false };
   }
+  setSessionCookie(reply, request, session.sessionId);
   return {
     authenticated: true,
     user: {
@@ -477,6 +479,18 @@ fastify.register(async (instance) => {
     socket.on("close", () => sockets.delete(socket));
 
     socket.on("message", async (raw) => {
+      const activeSession = readSessionUserById(session.sessionId);
+      if (
+        !activeSession ||
+        activeSession.userId !== session.userId ||
+        typeof activeSession.userId !== "number"
+      ) {
+        socket.send(
+          JSON.stringify({ type: "error", error: "Authentication required." }),
+        );
+        socket.close(4401, "Unauthorized");
+        return;
+      }
       let payload;
       try {
         payload = JSON.parse(raw.toString());
@@ -494,7 +508,7 @@ fastify.register(async (instance) => {
         const requestId = payload.requestId;
         try {
           const data = await rpcHandlers[payload.type](payload, {
-            userId: session.userId,
+            userId: activeSession.userId,
           });
           socket.send(JSON.stringify({ type: "rpcResult", requestId, data }));
         } catch (err) {
@@ -537,7 +551,7 @@ fastify.register(async (instance) => {
           id,
           socket,
           run: () =>
-            streamOllamaPrompt(socket, { ...payload, id }, session.userId),
+            streamOllamaPrompt(socket, { ...payload, id }, activeSession.userId),
         });
         return;
       }
@@ -549,7 +563,7 @@ fastify.register(async (instance) => {
           id,
           socket,
           run: () =>
-            streamLlamaPrompt(socket, { ...payload, id }, session.userId),
+            streamLlamaPrompt(socket, { ...payload, id }, activeSession.userId),
         });
         return;
       }
@@ -571,7 +585,7 @@ fastify.register(async (instance) => {
                 if (chatId) {
                   try {
                     const exists = await chatsCol.findOne(
-                      { _id: new ObjectId(chatId), userId: session.userId },
+                      { _id: new ObjectId(chatId), userId: activeSession.userId },
                       { projection: { _id: 1 } },
                     );
                     if (!exists) chatId = null;
@@ -580,7 +594,7 @@ fastify.register(async (instance) => {
                   }
                 }
                 if (!chatId) {
-                  const created = await createChat(session.userId);
+                  const created = await createChat(activeSession.userId);
                   chatId = created.id;
                   socket.send(
                     JSON.stringify({ type: "chatCreated", id, chat: created }),
@@ -621,7 +635,7 @@ fastify.register(async (instance) => {
                 persistedImage?.path ?? null,
                 {
                   chatId,
-                  userId: session.userId,
+                  userId: activeSession.userId,
                   userText: payload.prompt,
                   userImage: payload.image ?? null,
                   userAt: new Date(),

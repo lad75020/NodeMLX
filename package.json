@@ -7,6 +7,7 @@
     "dev": "node --watch server.js",
     "test": "node --test test/*.test.js",
     "user:add": "node scripts/onboard-user.js",
+    "user:reset": "node scripts/onboard-user.js --reset",
     "client:install": "cd client && npm install",
     "client:build": "cd client && npm run build",
     "client:dev": "cd client && npm start",

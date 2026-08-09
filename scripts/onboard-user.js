@@ -24,9 +24,11 @@ function usage() {
     [
       "Usage:",
       "  node scripts/onboard-user.js <username> [--password <password>] [--db <path>]",
+      "  node scripts/onboard-user.js --reset <username> [--password <password>] [--db <path>]",
       "",
       "Options:",
       "  -p, --password   Password for the new user. If omitted, you'll be prompted securely.",
+      "  --reset          Reset an existing user's password and revoke all of their sessions.",
       "  --db             Path to sqlite database (default: ./mlx-chat.db)",
       "  -h, --help       Show this help.",
     ].join("\n")
@@ -38,6 +40,7 @@ function parseArgs(rawArgs) {
     username: null,
     password: null,
     dbPath: DEFAULT_DB_PATH,
+    reset: false,
   };
 
   for (let i = 0; i < rawArgs.length; i += 1) {
@@ -53,6 +56,10 @@ function parseArgs(rawArgs) {
       }
       options.password = next;
       i += 1;
+      continue;
+    }
+    if (token === "--reset") {
+      options.reset = true;
       continue;
     }
     if (token === "--db") {
@@ -154,6 +161,14 @@ async function main() {
         created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         last_login_at TEXT
       );
+      CREATE TABLE IF NOT EXISTS sessions (
+        id           TEXT PRIMARY KEY,
+        user_id      INTEGER NOT NULL,
+        created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        expires_at   TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
     `);
 
     const findUser = db.prepare("SELECT id FROM users WHERE username = ?");
@@ -163,11 +178,24 @@ async function main() {
     `);
 
     const existing = findUser.get(username);
-    if (existing) {
+    if (existing && !options.reset) {
       throw new Error(`User '${username}' already exists.`);
+    }
+    if (!existing && options.reset) {
+      throw new Error(`User '${username}' does not exist.`);
     }
 
     const passwordHash = await hashPassword(password);
+    if (options.reset) {
+      const resetPassword = db.prepare("UPDATE users SET password_hash = ? WHERE id = ?");
+      const revokeSessions = db.prepare("DELETE FROM sessions WHERE user_id = ?");
+      db.transaction(() => {
+        resetPassword.run(passwordHash, existing.id);
+        revokeSessions.run(existing.id);
+      })();
+      console.log(`Password reset for user '${username}'; existing sessions were invalidated.`);
+      return;
+    }
     const result = createUser.run(username, passwordHash);
 
     console.log(

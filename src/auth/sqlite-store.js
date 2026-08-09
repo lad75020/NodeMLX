@@ -106,8 +106,9 @@ export function createAuthStore({
     `),
     touchSession: db.prepare(`
       UPDATE sessions
-      SET last_seen_at = ?
+      SET last_seen_at = ?, expires_at = ?
       WHERE id = ?
+        AND datetime(expires_at) > datetime('now')
     `),
     deleteSession: db.prepare("DELETE FROM sessions WHERE id = ?"),
     deleteExpiredSessions: db.prepare(`
@@ -125,6 +126,12 @@ export function createAuthStore({
       SET last_login_at = ?
       WHERE id = ?
     `),
+    updateUserPassword: db.prepare(`
+      UPDATE users
+      SET password_hash = ?
+      WHERE id = ?
+    `),
+    deleteSessionsForUser: db.prepare("DELETE FROM sessions WHERE user_id = ?"),
   };
   stmt.deleteExpiredSessions.run();
 
@@ -144,13 +151,9 @@ export function createAuthStore({
   }
 
   function readSessionUser(request) {
-    stmt.deleteExpiredSessions.run();
     const sessionId = sessionCookieValue(request);
     if (!sessionId) return null;
-    const session = stmt.getSessionUser.get(sessionId);
-    if (!session) return null;
-    stmt.touchSession.run(new Date().toISOString(), sessionId);
-    return session;
+    return getSessionUser(sessionId);
   }
 
   function sessionCookieValue(request) {
@@ -185,6 +188,18 @@ export function createAuthStore({
       return { sessionId, expiresAt };
     },
     readSessionUser,
+    readSessionUserById(sessionId) {
+      return getSessionUser(sessionId);
+    },
+    resetPasswordAndInvalidateSessions(userId, passwordHash) {
+      const reset = db.transaction(() => {
+        const result = stmt.updateUserPassword.run(passwordHash, userId);
+        if (result.changes !== 1) return false;
+        stmt.deleteSessionsForUser.run(userId);
+        return true;
+      });
+      return reset();
+    },
     createSessionJwt(session) {
       const now = Math.floor(Date.now() / 1000);
       const exp = Math.floor(new Date(session.expiresAt).getTime() / 1000);
@@ -287,8 +302,11 @@ export function createAuthStore({
     stmt.deleteExpiredSessions.run();
     const session = stmt.getSessionUser.get(sessionId);
     if (!session) return null;
-    stmt.touchSession.run(new Date().toISOString(), sessionId);
-    return session;
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + sessionTtlMs).toISOString();
+    const renewed = stmt.touchSession.run(now.toISOString(), expiresAt, sessionId);
+    if (renewed.changes !== 1) return null;
+    return { ...session, expiresAt };
   }
 }
 

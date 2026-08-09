@@ -13,6 +13,8 @@ The OpenAPI document is OpenAPI `3.1.0`. WebSocket details are represented as a 
 
 The backend uses an HTTP-only cookie named `nodemlx_session` for HTTP auth and a JSON Web Token (JWT) for WebSocket auth. JWTs are signed with an HMAC secret stored in SQLite (`app_secrets`) unless `JWT_SECRET` is provided, and every WebSocket JWT is validated against the SQLite `sessions` table.
 
+Sessions have a rolling seven-day inactivity lifetime. A valid authenticated HTTP request or WebSocket operation renews the SQLite session deadline; authenticated HTTP responses also renew the cookie lifetime. Logout, expiry, and an administrator password reset invalidate the session. Clients must discard a cached WebSocket token when `/api/auth/me` reports unauthenticated.
+
 ### `GET /api/auth/me`
 
 Returns whether the current request is authenticated.
@@ -52,6 +54,8 @@ On success, the server sets `nodemlx_session` and returns a JWT for WebSocket co
 }
 ```
 
+All credential failures return the same `401` response and generic error message, regardless of whether the username exists.
+
 ### `POST /api/auth/logout`
 
 Clears the current session cookie.
@@ -70,9 +74,17 @@ Registration is disabled. Users are created with:
 npm run user:add -- <username>
 ```
 
+An administrator can reset an existing local user without a browser or email recovery flow:
+
+```bash
+npm run user:reset -- <username>
+```
+
+The command prompts for the replacement password without echoing it, prints neither the password nor its hash, and atomically invalidates all sessions for that user.
+
 ## WebSocket Connection
 
-Connect to `/ws?token=<jwt>` after login. The JWT is returned by `/api/auth/login` and `/api/auth/me`. The server verifies the JWT signature and checks that its `sid` still exists in the SQLite `sessions` table before accepting the WebSocket upgrade.
+Connect to `/ws?token=<jwt>` after login. The JWT is returned by `/api/auth/login` and `/api/auth/me`. The server verifies the JWT signature and checks that its `sid` still exists in the SQLite `sessions` table before accepting the WebSocket upgrade. Each subsequent WebSocket operation rechecks and renews that session, so a logout, expiry, or password reset closes a live connection before it can process another operation.
 
 The server immediately sends the current MLX model state after connection, usually one of:
 
